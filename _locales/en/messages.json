@@ -1,0 +1,10 @@
+{
+    "extName": {
+        "message": "YouTube Bilingual Subtitles",
+        "description": "Extension name"
+    },
+    "extDescription": {
+        "message": "Display bilingual subtitles on YouTube videos with AI-powered translation and vocabulary learning features",
+        "description": "Extension description"
+    }
+}

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Bilingual Subtitles - Settings</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="options.css">
+</head>
+
+<body>
+    <div class="options-container">
+        <header class="options-header">
+            <div class="header-content">
+                <img src="../icons/icon48.png" alt="Logo" class="header-logo">
+                <div>
+                    <h1 class="header-title">YouTube Bilingual Subtitles</h1>
+                    <p class="header-subtitle">Configure your language learning experience</p>
+                </div>
+            </div>
+        </header>
+
+        <main class="options-main">
+            <!-- Language Settings -->
+            <section class="settings-card">
+                <div class="card-header">
+                    <span class="card-icon">🌍</span>
+                    <h2 class="card-title">Language Settings</h2>
+                </div>
+                <div class="card-body">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label" for="targetLanguage">Target Language (Learning)</label>
+                            <select id="targetLanguage" class="form-select">
+                                <option value="en">English</option>
+                                <option value="zh">中文 (Chinese)</option>
+                                <option value="ja">日本語 (Japanese)</option>
+                                <option value="ko">한국어 (Korean)</option>
+                                <option value="es">Español (Spanish)</option>
+                                <option value="fr">Français (French)</option>
+                                <option value="de">Deutsch (German)</option>
+                                <option value="ru">Русский (Russian)</option>
+                                <option value="pt">Português (Portuguese)</option>
+                                <option value="it">Italiano (Italian)</option>
+                                <option value="ar">العربية (Arabic)</option>
+                                <option value="hi">हिन्दी (Hindi)</option>
+                                <option value="th">ไทย (Thai)</option>
+                                <option value="vi">Tiếng Việt (Vietnamese)</option>
+                                <option value="tr">Türkçe (Turkish)</option>
+                                <option value="pl">Polski (Polish)</option>
+                                <option value="nl">Nederlands (Dutch)</option>
+                                <option value="sv">Svenska (Swedish)</option>
+                                <option value="uk">Українська (Ukrainian)</option>
+                                <option value="id">Bahasa Indonesia</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="nativeLanguage">Native Language</label>
+                            <select id="nativeLanguage" class="form-select">
+                                <option value="zh">中文 (Chinese)</option>
+                                <option value="en">English</option>
+                                <option value="ja">日本語 (Japanese)</option>
+                                <option value="ko">한국어 (Korean)</option>
+                                <option value="es">Español (Spanish)</option>
+                                <option value="fr">Français (French)</option>
+                                <option value="de">Deutsch (German)</option>
+                                <option value="ru">Русский (Russian)</option>
+                                <option value="pt">Português (Portuguese)</option>
+                                <option value="it">Italiano (Italian)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="proficiencyLevel">Proficiency Level</label>
+                        <select id="proficiencyLevel" class="form-select">
+                            <option value="beginner">🌱 Beginner (A1-A2) — Most words are new to you</option>
+                            <option value="intermediate">📗 Intermediate (B1-B2) — You know common words</option>
+                            <option value="advanced">🎓 Advanced (C1-C2) — You know most words</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <!-- AI Translation Settings -->
+            <section class="settings-card">
+                <div class="card-header">
+                    <span class="card-icon">🤖</span>
+                    <h2 class="card-title">AI Translation Settings</h2>
+                </div>
+                <div class="card-body">
+                    <div class="form-group">
+                        <label class="form-label">Translation Provider</label>
+                        <div class="provider-options">
+                            <label class="provider-option">
+                                <input type="radio" name="aiProvider" value="openai" checked>
+                                <div class="provider-card">
+                                    <span class="provider-icon">☁️</span>
+                                    <span class="provider-name">Cloud API</span>
+                                    <span class="provider-desc">OpenAI / Compatible</span>
+                                </div>
+                            </label>
+                            <label class="provider-option">
+                                <input type="radio" name="aiProvider" value="custom">
+                                <div class="provider-card">
+                                    <span class="provider-icon">🔧</span>
+                                    <span class="provider-name">Custom API</span>
+                                    <span class="provider-desc">Any OpenAI-compatible endpoint</span>
+                                </div>
+                            </label>
+                            <label class="provider-option">
+                                <input type="radio" name="aiProvider" value="local">
+                                <div class="provider-card">
+                                    <span class="provider-icon">💻</span>
+                                    <span class="provider-name">Local LLM</span>
+                                    <span class="provider-desc">Ollama / LM Studio</span>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Cloud API Settings -->
+                    <div id="cloudSettings" class="provider-settings">
+                        <div class="form-group">
+                            <label class="form-label" for="apiKey">API Key</label>
+                            <div class="input-with-icon">
+                                <input type="password" id="apiKey" class="form-input" placeholder="sk-...">
+                                <button class="input-icon-btn" id="toggleApiKey" title="Show/Hide">👁️</button>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label" for="apiEndpoint">API Endpoint</label>
+                                <input type="url" id="apiEndpoint" class="form-input"
+                                    placeholder="https://api.openai.com/v1/chat/completions">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="apiModel">Model</label>
+                                <input type="text" id="apiModel" class="form-input" placeholder="gpt-4o-mini">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Local LLM Settings -->
+                    <div id="localSettings" class="provider-settings" style="display: none;">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label" for="localEndpoint">Local Endpoint</label>
+                                <input type="url" id="localEndpoint" class="form-input"
+                                    placeholder="http://localhost:11434/api/generate">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="localModel">Model Name</label>
+                                <input type="text" id="localModel" class="form-input" placeholder="llama3">
+                            </div>
+                        </div>
+                        <div class="form-hint">
+                            <span class="hint-icon">💡</span>
+                            <span>Make sure Ollama or LM Studio is running locally. For Ollama, start with:
+                                <code>ollama serve</code></span>
+                        </div>
+                    </div>
+
+                    <button id="testConnection" class="btn btn-outline">
+                        <span class="btn-icon">🔌</span> Test Connection
+                    </button>
+                    <div id="testResult" class="test-result" style="display: none;"></div>
+                </div>
+            </section>
+
+            <!-- Display Settings -->
+            <section class="settings-card">
+                <div class="card-header">
+                    <span class="card-icon">🎨</span>
+                    <h2 class="card-title">Display Settings</h2>
+                </div>
+                <div class="card-body">
+                    <div class="form-group">
+                        <label class="form-label">Font Size: <span id="fontSizeValue">16</span>px</label>
+                        <input type="range" id="fontSize" class="form-range" min="12" max="28" value="16">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label" for="knownWordColor">Known Word Color</label>
+                            <div class="color-picker">
+                                <input type="color" id="knownWordColor" value="#4CAF50">
+                                <span class="color-label">✓ Known words</span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="unknownWordColor">Unknown Word Color</label>
+                            <div class="color-picker">
+                                <input type="color" id="unknownWordColor" value="#FF9800">
+                                <span class="color-label">? Unknown words</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group toggle-group">
+                        <label class="toggle-label">
+                            <span>Show original subtitle</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="showOriginal" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </label>
+                    </div>
+                    <div class="form-group toggle-group">
+                        <label class="toggle-label">
+                            <span>Show translated subtitle</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="showTranslation" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </label>
+                    </div>
+                    <div class="form-group toggle-group">
+                        <label class="toggle-label">
+                            <span>Auto-translate subtitles</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="autoTranslate" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </label>
+                    </div>
+                    <div class="form-group toggle-group">
+                        <label class="toggle-label">
+                            <span>Show subtitle panel on startup</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="showPanel" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </label>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Vocabulary Management -->
+            <section class="settings-card">
+                <div class="card-header">
+                    <span class="card-icon">📚</span>
+                    <h2 class="card-title">Vocabulary Management</h2>
+                </div>
+                <div class="card-body">
+                    <div class="vocab-stats">
+                        <div class="vocab-stat">
+                            <span class="vocab-stat-value" id="totalWords">0</span>
+                            <span class="vocab-stat-label">Total Words</span>
+                        </div>
+                        <div class="vocab-stat">
+                            <span class="vocab-stat-value learning" id="learningCount">0</span>
+                            <span class="vocab-stat-label">Learning</span>
+                        </div>
+                        <div class="vocab-stat">
+                            <span class="vocab-stat-value mastered" id="masteredCount">0</span>
+                            <span class="vocab-stat-label">Mastered</span>
+                        </div>
+                    </div>
+                    <div class="vocab-actions">
+                        <button id="exportVocab" class="btn btn-outline">
+                            <span class="btn-icon">📤</span> Export
+                        </button>
+                        <button id="importVocab" class="btn btn-outline">
+                            <span class="btn-icon">📥</span> Import
+                        </button>
+                        <button id="clearVocab" class="btn btn-danger">
+                            <span class="btn-icon">🗑️</span> Clear All
+                        </button>
+                    </div>
+                    <input type="file" id="importFile" accept=".json" style="display: none;">
+                </div>
+            </section>
+
+            <!-- Save Button -->
+            <div class="save-section">
+                <button id="saveSettings" class="btn btn-primary btn-large">
+                    <span class="btn-icon">💾</span> Save Settings
+                </button>
+                <div id="saveMessage" class="save-message" style="display: none;">
+                    ✓ Settings saved successfully!
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="../lib/languages.js"></script>
+    <script src="../lib/storage.js"></script>
+    <script src="../lib/translator.js"></script>
+    <script src="options.js"></script>
+</body>
+
+</html>

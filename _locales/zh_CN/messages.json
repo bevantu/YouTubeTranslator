@@ -1,0 +1,10 @@
+{
+    "extName": {
+        "message": "YouTube 双语字幕",
+        "description": "Extension name"
+    },
+    "extDescription": {
+        "message": "在YouTube视频上显示AI翻译的双语字幕，支持生词标记和词汇学习功能",
+        "description": "Extension description"
+    }
+}
