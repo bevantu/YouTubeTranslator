@@ -242,6 +242,7 @@ async function fetchOllama(prompt, settings) {
                 model: settings.localModel,
                 prompt: prompt,
                 stream: false,
+                keep_alive: '60m',  // keep model in GPU memory for 60 min after each use
                 options: {
                     num_predict: 200,  // subtitle translation is always short; cap output
                     num_ctx: 2048,     // small context window = fast prefill
