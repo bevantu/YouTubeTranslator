@@ -126,23 +126,13 @@ async function handleTranslate(text, targetLang, nativeLang, settings, context =
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
 
-    // ── Build high-quality subtitle translation prompt ─────────────────────────
-    //
-    // Key principles:
-    //  1. This is SPOKEN language — match colloquial register, not formal text
-    //  2. Aim for idiomatic target-language phrasing, not word-for-word
-    //  3. Include recent subtitle context so the model understands the topic
-    //  4. Keep translations concise enough to read quickly as subtitles
-    //
-    const system = `You are an expert subtitle translator. Your task is to translate ${tName} spoken subtitles into natural, fluent ${nName}.
-
-Core rules:
-- This is SPOKEN language from a video — sound natural and conversational, not like a textbook
-- NEVER translate word-for-word; convey the true meaning and intent naturally
-- Match the speaker's register: casual → colloquial ${nName}; technical → clear technical ${nName}; humorous → preserve the humor
-- Keep the translation concise — subtitles must be easy to read at a glance
-- Handle incomplete sentences, filler words (um, uh, well, so), and spoken quirks gracefully
-- Output ONLY the translated subtitle text, with no explanation, no quotes, no extra punctuation`;
+    // Concise but high-quality subtitle translation prompt.
+    // Shorter prompt = faster prefill (critical for small local models).
+    const system = `Subtitle translator: ${tName} → ${nName}. Rules:
+- Natural spoken ${nName}, NOT word-for-word
+- Match tone (casual/technical/humorous)
+- Concise, readable at a glance
+- Output ONLY the translation, no quotes, no explanation`;
 
     // Build context block from recent subtitles
     let contextBlock = '';
@@ -225,7 +215,7 @@ async function fetchOpenAI(system, user, settings) {
                 { role: 'user', content: user }
             ],
             temperature: 0.3,
-            max_tokens: 500
+            max_tokens: 300
         })
     });
 
@@ -251,7 +241,12 @@ async function fetchOllama(prompt, settings) {
             body: JSON.stringify({
                 model: settings.localModel,
                 prompt: prompt,
-                stream: false
+                stream: false,
+                options: {
+                    num_predict: 200,  // subtitle translation is always short; cap output
+                    num_ctx: 2048,     // small context window = fast prefill
+                    temperature: 0.3
+                }
             })
         });
 

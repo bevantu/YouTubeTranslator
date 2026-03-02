@@ -30,7 +30,8 @@ const SubtitleManager = {
     lastRenderedText: '',
     translationAbortKey: 0,
     timeupdateHandler: null,
-    contextBuffer: [],   // last 5 translated subtitles for context window
+    contextBuffer: [],   // last 8 translated subtitles for context window
+    preTranslating: false,
 
     // ── Init ──────────────────────────────────────────────────────────────────
 
@@ -89,12 +90,66 @@ const SubtitleManager = {
         if (!entries.length) return;
 
         console.log(`[YT Bilingual] Loaded ${entries.length} caption entries`);
+        // Cancel any previous pre-translation run
+        this.preTranslating = false;
         this.captions = entries;
         this.lastRenderedText = '';
         this.translationAbortKey++;
+        this.contextBuffer = [];
 
         // Hide YouTube's own caption layer
         this.hideNativeCaptions(true);
+
+        // Start background pre-translation immediately
+        if (this.settings.autoTranslate) {
+            // Small delay so the video player has time to start
+            setTimeout(() => this.startPreTranslation(), 800);
+        }
+    },
+
+    /**
+     * Pre-translate all subtitles sequentially in the background.
+     * By the time the viewer reaches each subtitle, its translation
+     * is already cached on the entry — zero latency for the user.
+     */
+    async startPreTranslation() {
+        this.preTranslating = true;
+        console.log('[YT Bilingual] Pre-translation started');
+
+        for (let i = 0; i < this.captions.length; i++) {
+            if (!this.preTranslating) break; // cancelled by destroy() or new load
+
+            const entry = this.captions[i];
+            if (entry.translation !== null) continue; // already translated
+
+            entry.translation = '__pending__';
+            try {
+                const ctx = this.contextBuffer.slice(-3);
+                const translation = await TranslatorService.translate(
+                    entry.text,
+                    this.settings.targetLanguage,
+                    this.settings.nativeLanguage,
+                    this.settings,
+                    ctx
+                );
+                entry.translation = translation || '';
+                if (translation) {
+                    this.contextBuffer.push({ original: entry.text, translated: translation });
+                    if (this.contextBuffer.length > 8) this.contextBuffer.shift();
+                    // If this subtitle is currently visible, update the display
+                    if (this.lastRenderedText === entry.text) {
+                        this.renderSubtitle(entry.text, translation, false);
+                    }
+                }
+            } catch (err) {
+                console.warn('[YT Bilingual] Pre-translate failed:', err.message);
+                entry.translation = ''; // reset so it can retry on-demand
+            }
+            // Tiny yield so timeupdate/UI remain responsive
+            await new Promise(r => setTimeout(r, 10));
+        }
+        this.preTranslating = false;
+        console.log('[YT Bilingual] Pre-translation complete');
     },
 
     /**
@@ -388,6 +443,7 @@ const SubtitleManager = {
     },
 
     destroy() {
+        this.preTranslating = false; // cancel any ongoing pre-translation loop
         const video = document.querySelector('video');
         if (video && this.timeupdateHandler) {
             video.removeEventListener('timeupdate', this.timeupdateHandler);
@@ -396,6 +452,7 @@ const SubtitleManager = {
         this.subtitleContainer = null;
         this.captions = [];
         this.lastRenderedText = '';
+        this.contextBuffer = [];
         this.hideNativeCaptions(false);
     }
 };
