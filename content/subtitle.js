@@ -96,43 +96,45 @@ const SubtitleManager = {
         this.hideNativeCaptions(true);
     },
 
-    /** Parse YouTube JSON3 caption format */
+    /**
+   * Parse YouTube JSON3 caption format.
+   *
+   * YouTube auto-generated captions use a "rolling window" where many
+   * events share the same tStartMs and differ only in which words are
+   * included.  We keep one entry per unique tStartMs, taking the longest
+   * text (the most-complete window) for that timestamp.
+   * We then set endMs = next entry's startMs so there are no gaps.
+   */
     parseJSON3(json) {
-        const entries = [];
-        let pendingStart = null;
-        let pendingText = '';
-
+        // Step 1: collect all events that have actual text
+        const raw = [];
         for (const ev of json.events) {
-            if (!ev.segs) continue;
-            const text = ev.segs.map(s => s.utf8 || '').join('').trim();
-            if (!text || text === '\n') continue;
-
-            // JSON3 can have many short-overlap events; merge consecutive non-blank
-            entries.push({
-                startMs: ev.tStartMs,
-                endMs: ev.tStartMs + (ev.dDurationMs || 2000),
-                text,
-                translation: null
-            });
+            if (!ev.segs || !ev.dDurationMs) continue;
+            const text = ev.segs.map(s => (s.utf8 || '').replace(/\n/g, ' ')).join('').trim();
+            if (!text) continue;
+            raw.push({ startMs: ev.tStartMs, dMs: ev.dDurationMs, text });
         }
+        if (!raw.length) return [];
 
-        // Merge very short overlapping segments (< 50 ms gap → same sentence)
-        const merged = [];
-        for (const e of entries) {
-            const prev = merged[merged.length - 1];
-            if (prev && e.startMs - prev.endMs < 50 && prev.text.length < 200) {
-                // Append to previous if it's the same rolling window
-                if (!prev.text.includes(e.text)) {
-                    prev.text = e.text; // take the latest (longer) version
-                    prev.endMs = e.endMs;
-                } else {
-                    prev.endMs = e.endMs;
-                }
-            } else {
-                merged.push({ ...e });
+        // Step 2: group by startMs, keep longest text per group
+        const byStart = new Map();
+        for (const e of raw) {
+            const existing = byStart.get(e.startMs);
+            if (!existing || e.text.length > existing.text.length) {
+                byStart.set(e.startMs, e);
             }
         }
-        return merged;
+
+        // Step 3: sort by start time
+        const sorted = Array.from(byStart.values()).sort((a, b) => a.startMs - b.startMs);
+
+        // Step 4: build final entries, endMs = next entry's startMs (no gaps)
+        return sorted.map((e, i) => ({
+            startMs: e.startMs,
+            endMs: i + 1 < sorted.length ? sorted[i + 1].startMs : e.startMs + e.dMs,
+            text: e.text,
+            translation: null   // null = not translated yet
+        }));
     },
 
     /** Parse legacy XML timedtext format */
@@ -191,26 +193,29 @@ const SubtitleManager = {
         if (entry.text === this.lastRenderedText) return; // already showing this
         this.lastRenderedText = entry.text;
 
-        // --- Render immediately with the full sentence ---
-        this.renderSubtitle(entry.text, entry.translation, /* loading */ entry.translation === null && this.settings.autoTranslate);
+        // Determine loading state
+        const needsTranslation = this.settings.autoTranslate && entry.translation === null;
+        // Show immediately with full original text
+        this.renderSubtitle(entry.text, entry.translation, needsTranslation);
 
-        // --- Request translation if not yet cached ---
-        if (this.settings.autoTranslate && entry.translation === null) {
-            const key = ++this.translationAbortKey;
+        // Request translation only once per entry.
+        // Use '__pending__' sentinel to prevent duplicate in-flight requests.
+        if (needsTranslation) {
+            entry.translation = '__pending__'; // lock so timeupdate doesn't re-queue
             TranslatorService.translate(
                 entry.text,
                 this.settings.targetLanguage,
                 this.settings.nativeLanguage,
                 this.settings
             ).then(translation => {
-                if (!translation) return;
-                entry.translation = translation; // cache on the entry object
-                // Only update display if this entry is still active
-                if (this.lastRenderedText === entry.text) {
+                entry.translation = translation || '';
+                // Update display only if this entry is still on screen
+                if (this.lastRenderedText === entry.text && translation) {
                     this.renderSubtitle(entry.text, translation, false);
                 }
             }).catch(err => {
                 console.error('[YT Bilingual] Translation error:', err);
+                entry.translation = ''; // unlock so it can retry next time
             });
         }
     },
@@ -277,7 +282,7 @@ const SubtitleManager = {
             tLine.className = 'yb-subtitle-line yb-subtitle-translation';
             tLine.style.fontSize = `${Math.max(12, settings.fontSize - 2)}px`;
 
-            if (loading) {
+            if (loading || translation === '__pending__') {
                 tLine.innerHTML = '<span class="yb-translating">⋯</span>';
             } else if (translation) {
                 tLine.textContent = translation;
