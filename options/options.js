@@ -55,7 +55,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         els.apiKey.type = els.apiKey.type === 'password' ? 'text' : 'password';
     });
 
-    // Test connection
+    // Test connection — routed via Background Service Worker to avoid mixed-content blocks
     document.getElementById('testConnection').addEventListener('click', async () => {
         const testResult = els.testResult;
         testResult.style.display = 'block';
@@ -63,14 +63,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         testResult.textContent = '⏳ Testing connection...';
 
         const testSettings = collectSettings();
-        const result = await TranslatorService.testConnection(testSettings);
-
-        if (result.success) {
-            testResult.className = 'test-result success';
-            testResult.textContent = `✓ Connection successful! Response: "${result.message}"`;
-        } else {
+        try {
+            const response = await chrome.runtime.sendMessage({
+                action: 'testConnection',
+                settings: testSettings
+            });
+            if (response?.success) {
+                testResult.className = 'test-result success';
+                testResult.textContent = `✓ Connection successful! Translation: "${response.result}"`;
+            } else {
+                testResult.className = 'test-result error';
+                testResult.textContent = `✗ Connection failed: ${response?.error || 'Unknown error'}`;
+            }
+        } catch (err) {
             testResult.className = 'test-result error';
-            testResult.textContent = `✗ Connection failed: ${result.message}`;
+            testResult.textContent = `✗ Connection failed: ${err.message}`;
         }
     });
 

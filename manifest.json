@@ -11,11 +11,12 @@
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
-    "https://youtube.com/*"
+    "https://youtube.com/*",
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
-    "service_worker": "background/background.js",
-    "type": "module"
+    "service_worker": "background/background.js"
   },
   "content_scripts": [
     {
@@ -29,7 +30,6 @@
       "js": [
         "lib/languages.js",
         "lib/storage.js",
-        "lib/translator.js",
         "content/wordPopup.js",
         "content/panel.js",
         "content/subtitle.js",
