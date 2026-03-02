@@ -30,6 +30,7 @@
       "js": [
         "lib/languages.js",
         "lib/storage.js",
+        "lib/translator.js",
         "content/wordPopup.js",
         "content/panel.js",
         "content/subtitle.js",

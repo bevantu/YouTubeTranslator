@@ -1,35 +1,39 @@
 /**
  * Subtitle extraction and rendering
- * Intercepts YouTube's captions and renders bilingual subtitles
+ * Intercepts YouTube's captions and renders bilingual subtitles.
+ *
+ * Key design decisions:
+ * - Debounce the MutationObserver callback: YouTube renders captions
+ *   word-by-word with animations; we wait 400ms of silence before we
+ *   treat the current text as a "complete" subtitle line.
+ * - Only fire a translation request when the text has actually stabilised.
+ * - Translation requests go to the Background SW via TranslatorService.
  */
 const SubtitleManager = {
     observer: null,
-    currentSubtitle: '',
     subtitleContainer: null,
     settings: null,
     vocabulary: {},
     subtitleIndex: 0,
-    isTranslating: false,
     lastCaptionText: '',
+    debounceTimer: null,
+    translationAbortKey: 0,   // incremented to cancel stale translations
 
-    /**
-     * Initialize subtitle manager
-     */
+    // ── Init ────────────────────────────────────────────────────────────────
+
     async init(settings) {
         this.settings = settings;
         this.vocabulary = await StorageHelper.getVocabulary();
         this.createSubtitleContainer();
         this.observeSubtitles();
 
-        // Listen for vocabulary updates
         document.addEventListener('yb-vocabulary-updated', async () => {
             this.vocabulary = await StorageHelper.getVocabulary();
         });
     },
 
-    /**
-     * Create custom subtitle container
-     */
+    // ── Subtitle container ───────────────────────────────────────────────────
+
     createSubtitleContainer() {
         if (this.subtitleContainer) return;
 
@@ -37,8 +41,7 @@ const SubtitleManager = {
         this.subtitleContainer.id = 'yt-bilingual-subtitles';
         this.subtitleContainer.className = 'yb-subtitle-container';
 
-        // Insert in the video player
-        const insertSubtitle = () => {
+        const insert = () => {
             const player = document.querySelector('#movie_player');
             if (player && !document.getElementById('yt-bilingual-subtitles')) {
                 player.appendChild(this.subtitleContainer);
@@ -46,19 +49,14 @@ const SubtitleManager = {
             }
             return false;
         };
-
-        if (!insertSubtitle()) {
-            const interval = setInterval(() => {
-                if (insertSubtitle()) clearInterval(interval);
-            }, 500);
+        if (!insert()) {
+            const iv = setInterval(() => { if (insert()) clearInterval(iv); }, 500);
         }
     },
 
-    /**
-     * Observe YouTube's native caption changes
-     */
+    // ── Observer ─────────────────────────────────────────────────────────────
+
     observeSubtitles() {
-        // Monitor for caption element changes
         const startObserving = () => {
             const captionWindow = document.querySelector('.ytp-caption-window-container');
             if (!captionWindow) {
@@ -66,68 +64,69 @@ const SubtitleManager = {
                 return;
             }
 
-            this.observer = new MutationObserver((mutations) => {
-                this.handleCaptionChange();
-            });
-
+            this.observer = new MutationObserver(() => this.scheduleUpdate());
             this.observer.observe(captionWindow, {
                 childList: true,
                 subtree: true,
                 characterData: true
             });
         };
-
         startObserving();
-
-        // Also poll for changes as a fallback
-        setInterval(() => this.handleCaptionChange(), 500);
     },
 
+    // ── Debounce ─────────────────────────────────────────────────────────────
+
     /**
-     * Handle caption text change
+     * Called on every DOM mutation inside the caption window.
+     * We wait 400 ms after the LAST mutation before committing to a render.
+     * This prevents the "word dripping" effect caused by YouTube's word-by-word
+     * caption animation.
      */
+    scheduleUpdate() {
+        clearTimeout(this.debounceTimer);
+        this.debounceTimer = setTimeout(() => this.handleCaptionChange(), 400);
+    },
+
+    // ── Caption change handler ────────────────────────────────────────────────
+
     async handleCaptionChange() {
-        const captionSegments = document.querySelectorAll('.ytp-caption-segment');
-        if (!captionSegments.length) {
-            if (this.subtitleContainer) {
-                this.subtitleContainer.innerHTML = '';
-            }
+        // Collect all visible caption segment text
+        const segments = document.querySelectorAll('.ytp-caption-segment');
+        if (!segments.length) {
+            if (this.subtitleContainer) this.subtitleContainer.innerHTML = '';
             return;
         }
 
-        let captionText = '';
-        captionSegments.forEach(seg => {
-            captionText += seg.textContent;
-        });
-        captionText = captionText.trim();
+        const captionText = Array.from(segments)
+            .map(s => s.textContent)
+            .join('')
+            .trim();
 
         if (!captionText || captionText === this.lastCaptionText) return;
         this.lastCaptionText = captionText;
 
-        // Hide original YouTube subtitles
+        // Hide YouTube's own subtitle layer
         const captionWindow = document.querySelector('.ytp-caption-window-container');
         if (captionWindow) {
             captionWindow.style.opacity = '0';
             captionWindow.style.pointerEvents = 'none';
         }
 
-        // Get video current time
         const video = document.querySelector('video');
         const currentTime = video ? video.currentTime : 0;
 
         this.subtitleIndex++;
         const index = this.subtitleIndex;
 
-        // Render original subtitle
-        this.renderBilingualSubtitle(captionText, null, index);
+        // Render original line immediately; translation slot shows a spinner
+        this.renderSubtitle(captionText, null, index, /* loading */ true);
 
-        // Add to panel
         SubtitlePanel.addSubtitle(captionText, '', currentTime, index);
         SubtitlePanel.setActive(index);
 
-        // Translate if enabled
-        if (this.settings.autoTranslate && !this.isTranslating) {
-            this.isTranslating = true;
+        // Translate asynchronously
+        if (this.settings.autoTranslate) {
+            const abortKey = ++this.translationAbortKey;
             try {
                 const translation = await TranslatorService.translate(
                     captionText,
@@ -135,128 +134,120 @@ const SubtitleManager = {
                     this.settings.nativeLanguage,
                     this.settings
                 );
-
-                // Only update if this is still the current subtitle
-                if (this.subtitleIndex === index) {
-                    this.renderBilingualSubtitle(captionText, translation, index);
+                // Only apply if this subtitle is still current
+                if (abortKey === this.translationAbortKey) {
+                    this.renderSubtitle(captionText, translation, index, false);
+                    SubtitlePanel.updateSubtitleTranslation(index, translation);
                 }
-                SubtitlePanel.updateSubtitleTranslation(index, translation);
             } catch (err) {
                 console.error('[YT Bilingual] Translation failed:', err);
+                if (abortKey === this.translationAbortKey) {
+                    this.renderSubtitle(captionText, '', index, false);
+                }
             }
-            this.isTranslating = false;
         }
     },
 
+    // ── Render ────────────────────────────────────────────────────────────────
+
     /**
-     * Render bilingual subtitle with word highlighting
+     * @param {string}  original    - Source text
+     * @param {string|null} translation - Translated text (null = not yet available)
+     * @param {number}  index       - Subtitle index (for stale-check)
+     * @param {boolean} loading     - Show loading indicator for translation
      */
-    renderBilingualSubtitle(original, translation, index) {
+    renderSubtitle(original, translation, index, loading) {
         if (!this.subtitleContainer) return;
 
         const settings = this.settings;
         const container = this.subtitleContainer;
         container.innerHTML = '';
 
-        // Click on subtitle area pauses/plays video
+        // Click on subtitle background: pause/play
         container.onclick = (e) => {
-            if (e.target.classList.contains('yb-word')) return; // Word click handled separately
-            const video = document.querySelector('video');
-            if (video) {
-                if (video.paused) {
-                    video.play();
-                } else {
-                    video.pause();
-                }
-            }
+            if (e.target.classList.contains('yb-word')) return;
+            const v = document.querySelector('video');
+            if (v) v.paused ? v.play() : v.pause();
         };
 
-        // Original subtitle line
+        // ── Original line ──────────────────────────────────────────────────
         if (settings.showOriginalSubtitle) {
-            const originalLine = document.createElement('div');
-            originalLine.className = 'yb-subtitle-line yb-subtitle-original';
-            originalLine.style.fontSize = `${settings.fontSize}px`;
+            const line = document.createElement('div');
+            line.className = 'yb-subtitle-line yb-subtitle-original';
+            line.style.fontSize = `${settings.fontSize}px`;
 
-            // Tokenize and create word spans
             const tokens = tokenizeText(original, settings.targetLanguage);
             tokens.forEach(token => {
                 if (isWord(token)) {
-                    const wordSpan = document.createElement('span');
-                    wordSpan.className = 'yb-word';
-                    wordSpan.textContent = token;
+                    const span = document.createElement('span');
+                    span.className = 'yb-word';
+                    span.textContent = token;
 
-                    // Check vocabulary status
                     const key = `${settings.targetLanguage}:${token.toLowerCase()}`;
-                    const vocabEntry = this.vocabulary[key];
-
-                    if (vocabEntry) {
-                        if (vocabEntry.status === 'known') {
-                            wordSpan.classList.add('yb-word-known');
-                        } else {
-                            wordSpan.classList.add('yb-word-learning');
-                        }
+                    const entry = this.vocabulary[key];
+                    if (entry) {
+                        span.classList.add(entry.status === 'known' ? 'yb-word-known' : 'yb-word-learning');
                     } else {
-                        wordSpan.classList.add('yb-word-unknown');
+                        span.classList.add('yb-word-unknown');
                     }
 
-                    // Word click handler
-                    wordSpan.addEventListener('click', async (e) => {
+                    span.addEventListener('click', async (e) => {
                         e.stopPropagation();
-                        // Pause video
-                        const video = document.querySelector('video');
-                        if (video && !video.paused) {
-                            video.pause();
-                        }
-                        // Show popup
-                        WordPopup.show(wordSpan, token, original, settings.targetLanguage, settings.nativeLanguage, settings);
+                        const v = document.querySelector('video');
+                        if (v && !v.paused) v.pause();
+                        WordPopup.show(span, token, original, settings.targetLanguage, settings.nativeLanguage, settings);
                     });
 
-                    originalLine.appendChild(wordSpan);
+                    line.appendChild(span);
+
+                    // Space after word for non-CJK
+                    if (!['zh', 'ja', 'ko'].includes(settings.targetLanguage)) {
+                        line.appendChild(document.createTextNode(' '));
+                    }
                 } else {
-                    originalLine.appendChild(document.createTextNode(token));
-                }
-                // Add space between words (except for CJK)
-                if (!['zh', 'ja'].includes(settings.targetLanguage) && isWord(token)) {
-                    originalLine.appendChild(document.createTextNode(' '));
+                    line.appendChild(document.createTextNode(token));
                 }
             });
 
-            container.appendChild(originalLine);
+            container.appendChild(line);
         }
 
-        // Translation line
-        if (settings.showTranslatedSubtitle && translation) {
-            const translationLine = document.createElement('div');
-            translationLine.className = 'yb-subtitle-line yb-subtitle-translation';
-            translationLine.style.fontSize = `${Math.max(12, settings.fontSize - 2)}px`;
-            translationLine.textContent = translation;
-            container.appendChild(translationLine);
+        // ── Translation line ───────────────────────────────────────────────
+        if (settings.showTranslatedSubtitle) {
+            const tLine = document.createElement('div');
+            tLine.className = 'yb-subtitle-line yb-subtitle-translation';
+            tLine.style.fontSize = `${Math.max(12, settings.fontSize - 2)}px`;
+
+            if (loading) {
+                tLine.innerHTML = '<span class="yb-translating">⋯</span>';
+            } else if (translation) {
+                tLine.textContent = translation;
+            } else {
+                return; // no translation, no line
+            }
+
+            container.appendChild(tLine);
         }
     },
 
-    /**
-     * Update settings
-     */
+    // ── Misc ──────────────────────────────────────────────────────────────────
+
     async updateSettings(newSettings) {
         this.settings = newSettings;
         this.vocabulary = await StorageHelper.getVocabulary();
     },
 
-    /**
-     * Cleanup
-     */
     destroy() {
-        if (this.observer) {
-            this.observer.disconnect();
-        }
-        if (this.subtitleContainer) {
-            this.subtitleContainer.remove();
-        }
-        // Restore YouTube captions
-        const captionWindow = document.querySelector('.ytp-caption-window-container');
-        if (captionWindow) {
-            captionWindow.style.opacity = '';
-            captionWindow.style.pointerEvents = '';
+        if (this.observer) this.observer.disconnect();
+        clearTimeout(this.debounceTimer);
+        if (this.subtitleContainer) this.subtitleContainer.remove();
+        this.subtitleContainer = null;
+        this.lastCaptionText = '';
+
+        const cw = document.querySelector('.ytp-caption-window-container');
+        if (cw) {
+            cw.style.opacity = '';
+            cw.style.pointerEvents = '';
         }
     }
 };

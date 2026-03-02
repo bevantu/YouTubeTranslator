@@ -68,6 +68,26 @@
   opacity: 0.9;
 }
 
+.yb-translating {
+  color: var(--yb-text-secondary);
+  opacity: 0.6;
+  animation: yb-ellipsis 1.2s infinite;
+  letter-spacing: 4px;
+  font-size: 18px;
+}
+
+@keyframes yb-ellipsis {
+
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+
+  50% {
+    opacity: 0.9;
+  }
+}
+
 /* ==================
    Word Highlighting
    ================== */
@@ -549,6 +569,7 @@
     opacity: 0;
     transform: translateY(4px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -560,6 +581,7 @@
     opacity: 0;
     transform: translateY(8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
