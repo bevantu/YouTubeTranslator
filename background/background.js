@@ -79,7 +79,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.action === 'testConnection') {
-        handleTranslate('Hello', 'en', 'zh', message.settings)
+        const s = message.settings || {};
+        // Validate required fields before attempting network call
+        if (s.aiProvider !== 'local' && !s.apiKey) {
+            sendResponse({ success: false, error: 'API Key is empty. Please fill in your API Key.' });
+            return true;
+        }
+        if (s.aiProvider !== 'local' && !s.apiEndpoint) {
+            sendResponse({ success: false, error: 'API Endpoint is empty.' });
+            return true;
+        }
+        if (s.aiProvider === 'local' && !s.localEndpoint) {
+            sendResponse({ success: false, error: 'Local Endpoint is empty.' });
+            return true;
+        }
+        if (s.aiProvider === 'local' && !s.localModel) {
+            sendResponse({ success: false, error: 'Model Name is empty.' });
+            return true;
+        }
+        // skipCache=true so we always make a real network request
+        handleTranslate('Hello', 'en', 'zh', s, true)
             .then(result => sendResponse({ success: true, result }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -95,12 +114,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ─── Translation ──────────────────────────────────────────────────────────────
 
-async function handleTranslate(text, targetLang, nativeLang, settings) {
+async function handleTranslate(text, targetLang, nativeLang, settings, skipCache = false) {
     if (!text || !text.trim()) return '';
 
     const cacheKey = makeCacheKey('tr', text, targetLang, nativeLang);
-    const cached = await getCache(cacheKey);
-    if (cached) return cached;
+    if (!skipCache) {
+        const cached = await getCache(cacheKey);
+        if (cached) return cached;
+    }
 
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
