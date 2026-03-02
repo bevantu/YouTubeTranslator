@@ -99,37 +99,25 @@ const SubtitleManager = {
     /**
      * Parse YouTube JSON3 caption format.
      *
-     * YouTube auto-generated captions use a ROLLING WINDOW: many events
-     * share overlapping time and each shows a short sliding phrase like:
-     *   t=1s "if you want"
-     *   t=1.5s "you want to"
-     *   t=2s "want to reduce"
-     *
-     * We reconstruct FULL sentences by detecting word overlap between
-     * consecutive events and accumulating only the NEW words each time.
-     * A new sentence begins when:
-     *  - gap between events > 1200ms (speaker pause), OR
-     *  - previous sentence ends with sentence-ending punctuation
-     *
-     * For MANUAL (non-rolling) captions, events don't overlap so each
-     * event becomes its own sentence entry — works correctly as-is.
+     * Auto-gen captions use a ROLLING WINDOW - each event is a short
+     * sliding phrase. We accumulate new words and split at sentence
+     * boundaries (embedded '.' or gap > 600ms) and max 100 chars.
      */
     parseJSON3(json) {
-        // Step 1: collect events with actual text
+        // Step 1: collect events with text
         const raw = [];
         for (const ev of json.events) {
             if (!ev.segs || !ev.dDurationMs) continue;
             const text = ev.segs
                 .map(s => (s.utf8 || '').replace(/\n/g, ' '))
-                .join('')
-                .trim();
+                .join('').trim();
             if (!text) continue;
             raw.push({ startMs: ev.tStartMs, endMs: ev.tStartMs + ev.dDurationMs, text });
         }
         if (!raw.length) return [];
         raw.sort((a, b) => a.startMs - b.startMs);
 
-        // Step 2: dedup by startMs — keep longest text per timestamp
+        // Step 2: dedup by startMs
         const byStart = new Map();
         for (const e of raw) {
             const ex = byStart.get(e.startMs);
@@ -137,76 +125,91 @@ const SubtitleManager = {
         }
         const events = Array.from(byStart.values()).sort((a, b) => a.startMs - b.startMs);
 
-        // Step 3: reconstruct sentences from rolling window events
-        const SENTENCE_GAP_MS = 1200; // gap that signals a sentence break
+        // Step 3: rolling window accumulation with sentence splitting
+        const GAP_MS = 600;  // pause = new sentence
+        const MAX_CHARS = 100;  // max chars per subtitle
         const sentences = [];
 
-        let sentStartMs = events[0].startMs;
-        let sentEndMs = events[0].endMs;
+        let sentStart = events[0].startMs;
+        let sentEnd = events[0].endMs;
         let accText = events[0].text;
         let prevText = events[0].text;
         let prevEndMs = events[0].endMs;
 
-        const pushSentence = () => {
-            if (accText.trim()) {
-                sentences.push({
-                    startMs: sentStartMs,
-                    endMs: sentEndMs,
-                    text: accText.trim(),
-                    translation: null
-                });
-            }
+        const flush = (endMs) => {
+            const t = accText.trim();
+            if (t) sentences.push({ startMs: sentStart, endMs: endMs || sentEnd, text: t, translation: null });
+        };
+
+        // Split accText at the FIRST embedded sentence boundary
+        // e.g. "...in tech. You need real" -> split into two entries
+        const splitEmbedded = (approxMs) => {
+            const m = accText.match(/^([\s\S]*?[.!?。！？])\s+([\s\S]+)$/);
+            if (!m) return false;
+            sentences.push({ startMs: sentStart, endMs: approxMs, text: m[1].trim(), translation: null });
+            sentStart = approxMs;
+            sentEnd = approxMs;
+            accText = m[2].trim();
+            return true;
+        };
+
+        // Split at comma when text is too long
+        const splitComma = (approxMs) => {
+            if (accText.length <= MAX_CHARS) return false;
+            const minIdx = Math.floor(accText.length * 0.4);
+            const idx = accText.indexOf(', ', minIdx);
+            if (idx === -1) return false;
+            const before = accText.slice(0, idx + 1).trim();
+            const after = accText.slice(idx + 2).trim();
+            if (!after) return false;
+            sentences.push({ startMs: sentStart, endMs: approxMs, text: before, translation: null });
+            sentStart = approxMs;
+            sentEnd = approxMs;
+            accText = after;
+            return true;
         };
 
         for (let i = 1; i < events.length; i++) {
             const curr = events[i];
             const gap = curr.startMs - prevEndMs;
 
-            // Large gap or sentence-ending punctuation → start new sentence
-            const sentenceEnds = /[.!?。！？…]$/.test(accText.trim());
-            if (gap > SENTENCE_GAP_MS || sentenceEnds) {
-                pushSentence();
-                sentStartMs = curr.startMs;
-                sentEndMs = curr.endMs;
+            if (gap > GAP_MS) {
+                flush(prevEndMs);
+                sentStart = curr.startMs;
+                sentEnd = curr.endMs;
                 accText = curr.text;
                 prevText = curr.text;
                 prevEndMs = curr.endMs;
                 continue;
             }
 
-            // Try to detect rolling window: find how many words at the END of
-            // prevText match the START of curr.text
+            // Find rolling window overlap
             const prevWords = prevText.split(/\s+/).filter(Boolean);
             const currWords = curr.text.split(/\s+/).filter(Boolean);
             let overlap = 0;
             for (let len = Math.min(prevWords.length, currWords.length); len > 0; len--) {
                 if (prevWords.slice(-len).join(' ').toLowerCase() ===
                     currWords.slice(0, len).join(' ').toLowerCase()) {
-                    overlap = len;
-                    break;
+                    overlap = len; break;
                 }
             }
-
-            if (overlap > 0) {
-                // Rolling window: append only the new words
-                const newWords = currWords.slice(overlap);
-                if (newWords.length > 0) {
-                    accText += ' ' + newWords.join(' ');
-                }
-            } else {
-                // No overlap but small gap — still same sentence, just append
-                accText += ' ' + curr.text;
-            }
-
-            sentEndMs = Math.max(sentEndMs, curr.endMs);
+            const newWords = overlap > 0 ? currWords.slice(overlap) : currWords;
+            if (newWords.length > 0) accText += ' ' + newWords.join(' ');
+            sentEnd = Math.max(sentEnd, curr.endMs);
             prevText = curr.text;
             prevEndMs = curr.endMs;
-        }
-        pushSentence();
 
-        console.log(`[YT Bilingual] Reconstructed ${sentences.length} sentences from ${events.length} events`);
+            // Check for embedded sentence boundary FIRST
+            if (splitEmbedded(curr.startMs)) { sentEnd = curr.endMs; continue; }
+            // Then overflow comma split
+            splitComma(curr.startMs);
+        }
+        flush();
+
+        console.log(`[YT Bilingual] ${sentences.length} sentences from ${events.length} events`);
         return sentences;
     },
+
 
     /** Parse legacy XML timedtext format */
     parseXML(xml) {
