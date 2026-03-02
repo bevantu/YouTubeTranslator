@@ -97,44 +97,115 @@ const SubtitleManager = {
     },
 
     /**
-   * Parse YouTube JSON3 caption format.
-   *
-   * YouTube auto-generated captions use a "rolling window" where many
-   * events share the same tStartMs and differ only in which words are
-   * included.  We keep one entry per unique tStartMs, taking the longest
-   * text (the most-complete window) for that timestamp.
-   * We then set endMs = next entry's startMs so there are no gaps.
-   */
+     * Parse YouTube JSON3 caption format.
+     *
+     * YouTube auto-generated captions use a ROLLING WINDOW: many events
+     * share overlapping time and each shows a short sliding phrase like:
+     *   t=1s "if you want"
+     *   t=1.5s "you want to"
+     *   t=2s "want to reduce"
+     *
+     * We reconstruct FULL sentences by detecting word overlap between
+     * consecutive events and accumulating only the NEW words each time.
+     * A new sentence begins when:
+     *  - gap between events > 1200ms (speaker pause), OR
+     *  - previous sentence ends with sentence-ending punctuation
+     *
+     * For MANUAL (non-rolling) captions, events don't overlap so each
+     * event becomes its own sentence entry — works correctly as-is.
+     */
     parseJSON3(json) {
-        // Step 1: collect all events that have actual text
+        // Step 1: collect events with actual text
         const raw = [];
         for (const ev of json.events) {
             if (!ev.segs || !ev.dDurationMs) continue;
-            const text = ev.segs.map(s => (s.utf8 || '').replace(/\n/g, ' ')).join('').trim();
+            const text = ev.segs
+                .map(s => (s.utf8 || '').replace(/\n/g, ' '))
+                .join('')
+                .trim();
             if (!text) continue;
-            raw.push({ startMs: ev.tStartMs, dMs: ev.dDurationMs, text });
+            raw.push({ startMs: ev.tStartMs, endMs: ev.tStartMs + ev.dDurationMs, text });
         }
         if (!raw.length) return [];
+        raw.sort((a, b) => a.startMs - b.startMs);
 
-        // Step 2: group by startMs, keep longest text per group
+        // Step 2: dedup by startMs — keep longest text per timestamp
         const byStart = new Map();
         for (const e of raw) {
-            const existing = byStart.get(e.startMs);
-            if (!existing || e.text.length > existing.text.length) {
-                byStart.set(e.startMs, e);
-            }
+            const ex = byStart.get(e.startMs);
+            if (!ex || e.text.length > ex.text.length) byStart.set(e.startMs, e);
         }
+        const events = Array.from(byStart.values()).sort((a, b) => a.startMs - b.startMs);
 
-        // Step 3: sort by start time
-        const sorted = Array.from(byStart.values()).sort((a, b) => a.startMs - b.startMs);
+        // Step 3: reconstruct sentences from rolling window events
+        const SENTENCE_GAP_MS = 1200; // gap that signals a sentence break
+        const sentences = [];
 
-        // Step 4: build final entries, endMs = next entry's startMs (no gaps)
-        return sorted.map((e, i) => ({
-            startMs: e.startMs,
-            endMs: i + 1 < sorted.length ? sorted[i + 1].startMs : e.startMs + e.dMs,
-            text: e.text,
-            translation: null   // null = not translated yet
-        }));
+        let sentStartMs = events[0].startMs;
+        let sentEndMs = events[0].endMs;
+        let accText = events[0].text;
+        let prevText = events[0].text;
+        let prevEndMs = events[0].endMs;
+
+        const pushSentence = () => {
+            if (accText.trim()) {
+                sentences.push({
+                    startMs: sentStartMs,
+                    endMs: sentEndMs,
+                    text: accText.trim(),
+                    translation: null
+                });
+            }
+        };
+
+        for (let i = 1; i < events.length; i++) {
+            const curr = events[i];
+            const gap = curr.startMs - prevEndMs;
+
+            // Large gap or sentence-ending punctuation → start new sentence
+            const sentenceEnds = /[.!?。！？…]$/.test(accText.trim());
+            if (gap > SENTENCE_GAP_MS || sentenceEnds) {
+                pushSentence();
+                sentStartMs = curr.startMs;
+                sentEndMs = curr.endMs;
+                accText = curr.text;
+                prevText = curr.text;
+                prevEndMs = curr.endMs;
+                continue;
+            }
+
+            // Try to detect rolling window: find how many words at the END of
+            // prevText match the START of curr.text
+            const prevWords = prevText.split(/\s+/).filter(Boolean);
+            const currWords = curr.text.split(/\s+/).filter(Boolean);
+            let overlap = 0;
+            for (let len = Math.min(prevWords.length, currWords.length); len > 0; len--) {
+                if (prevWords.slice(-len).join(' ').toLowerCase() ===
+                    currWords.slice(0, len).join(' ').toLowerCase()) {
+                    overlap = len;
+                    break;
+                }
+            }
+
+            if (overlap > 0) {
+                // Rolling window: append only the new words
+                const newWords = currWords.slice(overlap);
+                if (newWords.length > 0) {
+                    accText += ' ' + newWords.join(' ');
+                }
+            } else {
+                // No overlap but small gap — still same sentence, just append
+                accText += ' ' + curr.text;
+            }
+
+            sentEndMs = Math.max(sentEndMs, curr.endMs);
+            prevText = curr.text;
+            prevEndMs = curr.endMs;
+        }
+        pushSentence();
+
+        console.log(`[YT Bilingual] Reconstructed ${sentences.length} sentences from ${events.length} events`);
+        return sentences;
     },
 
     /** Parse legacy XML timedtext format */

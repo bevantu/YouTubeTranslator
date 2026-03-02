@@ -1,54 +1,51 @@
 /**
- * inject.js — runs in the PAGE (MAIN) world.
+ * inject.js — runs in the PAGE (MAIN) world at document_start.
  *
- * Content scripts live in an "isolated world" and cannot intercept the
- * page's own fetch/XHR calls. To capture YouTube's timedtext (subtitle)
- * requests we must be injected directly into the page context.
- *
- * Once we capture a timedtext response we dispatch a CustomEvent on
- * window so the isolated-world content script can pick it up.
+ * Intercepts ONLY timedtext (subtitle) requests from YouTube.
+ * All other fetch/XHR calls are passed through completely unchanged
+ * so we do not interfere with video streaming, analytics, etc.
  */
 (function () {
     'use strict';
 
-    function maybeCapture(url, getText) {
-        if (!url) return;
-        // Match YouTube's subtitle API
-        if (!url.includes('timedtext') && !url.includes('youtube_timedtext')) return;
-
-        getText().then(text => {
-            if (!text) return;
-            window.dispatchEvent(new CustomEvent('__yb_timedtext__', {
-                detail: { text, url }
-            }));
-        }).catch(() => { });
+    function isTimedTextUrl(url) {
+        return typeof url === 'string' && url.includes('timedtext');
     }
 
-    // ── Intercept fetch ─────────────────────────────────────────────────────────
+    function dispatch(text, url) {
+        if (!text || text.length < 10) return;
+        window.dispatchEvent(new CustomEvent('__yb_timedtext__', {
+            detail: { text, url }
+        }));
+    }
+
+    // ── Intercept fetch ───────────────────────────────────────────────────────
     const origFetch = window.fetch;
     window.fetch = function (input, init) {
         const url = typeof input === 'string' ? input
             : (input instanceof Request ? input.url : '');
-        const promise = origFetch.apply(this, arguments);
-        maybeCapture(url, () => promise.then(r => r.clone().text()));
-        return promise;
+
+        // Pass non-timedtext requests through completely untouched
+        if (!isTimedTextUrl(url)) {
+            return origFetch.apply(this, arguments);
+        }
+
+        // For timedtext: call original fetch, then read response text
+        return origFetch.apply(this, arguments).then(response => {
+            response.clone().text().then(text => dispatch(text, url)).catch(() => { });
+            return response;
+        });
     };
 
-    // ── Intercept XMLHttpRequest ────────────────────────────────────────────────
+    // ── Intercept XMLHttpRequest ──────────────────────────────────────────────
     const origOpen = XMLHttpRequest.prototype.open;
-    const origSend = XMLHttpRequest.prototype.send;
-
     XMLHttpRequest.prototype.open = function (method, url) {
-        this._ybUrl = typeof url === 'string' ? url : '';
-        return origOpen.apply(this, arguments);
-    };
-
-    XMLHttpRequest.prototype.send = function () {
-        if (this._ybUrl && this._ybUrl.includes('timedtext')) {
-            this.addEventListener('load', () => {
-                maybeCapture(this._ybUrl, () => Promise.resolve(this.responseText));
+        if (isTimedTextUrl(url)) {
+            this._ybUrl = url;
+            this.addEventListener('load', function () {
+                dispatch(this.responseText, this._ybUrl);
             });
         }
-        return origSend.apply(this, arguments);
+        return origOpen.apply(this, arguments);
     };
 })();
