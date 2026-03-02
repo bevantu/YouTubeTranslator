@@ -1,22 +1,15 @@
 /**
  * Content Script Entry Point
- * Initializes all components when on a YouTube video page
  */
 (function () {
     'use strict';
 
     let initialized = false;
 
-    /**
-     * Check if we're on a YouTube video page
-     */
     function isVideoPage() {
         return window.location.pathname === '/watch';
     }
 
-    /**
-     * Initialize the extension
-     */
     async function initialize() {
         if (initialized || !isVideoPage()) return;
         initialized = true;
@@ -25,63 +18,54 @@
 
         const settings = await StorageHelper.getSettings();
         if (!settings.enabled) {
-            console.log('[YT Bilingual] Extension is disabled');
+            console.log('[YT Bilingual] Disabled');
             return;
         }
 
-        // Wait for video to be ready
         await waitForElement('video');
         await waitForElement('#movie_player');
 
-        // Initialize components
         WordPopup.init();
         SubtitlePanel.init();
         await SubtitleManager.init(settings);
 
-        // Show panel if enabled
-        if (settings.showPanel) {
-            SubtitlePanel.show();
-        }
+        if (settings.showPanel) SubtitlePanel.show();
 
-        console.log('[YT Bilingual] Initialized successfully!');
+        console.log('[YT Bilingual] Ready. autoTranslate:', settings.autoTranslate,
+            '| provider:', settings.aiProvider,
+            '| target:', settings.targetLanguage, '→', settings.nativeLanguage);
     }
 
-    /**
-     * Wait for an element to appear in the DOM
-     */
     function waitForElement(selector, timeout = 10000) {
-        return new Promise((resolve, reject) => {
-            const el = document.querySelector(selector);
-            if (el) return resolve(el);
-
-            const observer = new MutationObserver(() => {
+        return new Promise(resolve => {
+            if (document.querySelector(selector)) return resolve(document.querySelector(selector));
+            const ob = new MutationObserver(() => {
                 const el = document.querySelector(selector);
-                if (el) {
-                    observer.disconnect();
-                    resolve(el);
-                }
+                if (el) { ob.disconnect(); resolve(el); }
             });
-
-            observer.observe(document.body, { childList: true, subtree: true });
-            setTimeout(() => {
-                observer.disconnect();
-                resolve(null);
-            }, timeout);
+            ob.observe(document.body, { childList: true, subtree: true });
+            setTimeout(() => { ob.disconnect(); resolve(null); }, timeout);
         });
     }
 
-    /**
-     * Handle YouTube SPA navigation
-     */
+    // ── Listen for timedtext data from inject.js (MAIN world) ──────────────────
+    // inject.js fires CustomEvent('__yb_timedtext__') on window when it captures
+    // a YouTube subtitle API response.
+    window.addEventListener('__yb_timedtext__', (e) => {
+        const { text, url } = e.detail || {};
+        if (text && initialized) {
+            console.log('[YT Bilingual] Received timedtext data, length:', text.length);
+            SubtitleManager.loadTimedText(text, url);
+        }
+    });
+
+    // ── YouTube SPA navigation ─────────────────────────────────────────────────
     function handleNavigation() {
         let lastUrl = location.href;
-
-        // YouTube uses History API for SPA navigation
-        const observer = new MutationObserver(() => {
+        const ob = new MutationObserver(() => {
             if (location.href !== lastUrl) {
                 lastUrl = location.href;
                 if (isVideoPage()) {
-                    // Reset and reinitialize
                     initialized = false;
                     SubtitlePanel.clear();
                     SubtitleManager.destroy();
@@ -89,13 +73,9 @@
                 }
             }
         });
+        ob.observe(document.querySelector('title') || document.body,
+            { childList: true, subtree: true });
 
-        observer.observe(document.querySelector('title') || document.body, {
-            childList: true,
-            subtree: true
-        });
-
-        // Also listen for yt-navigate-finish event
         document.addEventListener('yt-navigate-finish', () => {
             if (isVideoPage() && !initialized) {
                 setTimeout(() => initialize(), 1000);
@@ -103,44 +83,23 @@
         });
     }
 
-    /**
-     * Listen for settings changes
-     */
-    chrome.storage.onChanged.addListener((changes, namespace) => {
-        if (changes.settings) {
-            const newSettings = changes.settings.newValue;
-            SubtitleManager.updateSettings(newSettings);
-        }
+    // ── Messages from popup / background ──────────────────────────────────────
+    chrome.storage.onChanged.addListener((changes) => {
+        if (changes.settings) SubtitleManager.updateSettings(changes.settings.newValue);
     });
 
-    /**
-     * Listen for messages from popup/background
-     */
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-        if (message.action === 'toggleExtension') {
-            if (message.enabled) {
-                initialized = false;
-                initialize();
-            } else {
-                SubtitleManager.destroy();
-                initialized = false;
-            }
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+        if (msg.action === 'toggleExtension') {
+            if (msg.enabled) { initialized = false; initialize(); }
+            else { SubtitleManager.destroy(); initialized = false; }
             sendResponse({ success: true });
         }
-        if (message.action === 'togglePanel') {
-            SubtitlePanel.toggle();
-            sendResponse({ success: true });
-        }
-        if (message.action === 'getStatus') {
-            sendResponse({ initialized, isVideoPage: isVideoPage() });
-        }
+        if (msg.action === 'togglePanel') { SubtitlePanel.toggle(); sendResponse({ success: true }); }
+        if (msg.action === 'getStatus') sendResponse({ initialized, isVideoPage: isVideoPage() });
         return true;
     });
 
-    // Start
+    // ── Boot ───────────────────────────────────────────────────────────────────
     handleNavigation();
-    if (isVideoPage()) {
-        // Delay to ensure YouTube is ready
-        setTimeout(() => initialize(), 2000);
-    }
+    if (isVideoPage()) setTimeout(() => initialize(), 1500);
 })();

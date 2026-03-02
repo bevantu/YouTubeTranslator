@@ -24,6 +24,17 @@
         "https://www.youtube.com/*",
         "https://youtube.com/*"
       ],
+      "js": [
+        "content/inject.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*"
+      ],
       "css": [
         "content/content.css"
       ],
