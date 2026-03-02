@@ -30,6 +30,7 @@ const SubtitleManager = {
     lastRenderedText: '',
     translationAbortKey: 0,
     timeupdateHandler: null,
+    contextBuffer: [],   // last 5 translated subtitles for context window
 
     // ── Init ──────────────────────────────────────────────────────────────────
 
@@ -276,15 +277,20 @@ const SubtitleManager = {
         // Use '__pending__' sentinel to prevent duplicate in-flight requests.
         if (needsTranslation) {
             entry.translation = '__pending__'; // lock so timeupdate doesn't re-queue
+            const recentContext = this.contextBuffer.slice(-5); // last 5 subtitles
             TranslatorService.translate(
                 entry.text,
                 this.settings.targetLanguage,
                 this.settings.nativeLanguage,
-                this.settings
+                this.settings,
+                recentContext
             ).then(translation => {
                 entry.translation = translation || '';
                 // Update display only if this entry is still on screen
                 if (this.lastRenderedText === entry.text && translation) {
+                    // Add to context buffer once translation is done
+                    this.contextBuffer.push({ original: entry.text, translated: translation });
+                    if (this.contextBuffer.length > 8) this.contextBuffer.shift();
                     this.renderSubtitle(entry.text, translation, false);
                 }
             }).catch(err => {

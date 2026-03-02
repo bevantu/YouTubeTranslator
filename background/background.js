@@ -65,7 +65,7 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'translate') {
-        handleTranslate(message.text, message.targetLang, message.nativeLang, message.settings)
+        handleTranslate(message.text, message.targetLang, message.nativeLang, message.settings, message.context || [])
             .then(result => sendResponse({ success: true, result }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -114,7 +114,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ─── Translation ──────────────────────────────────────────────────────────────
 
-async function handleTranslate(text, targetLang, nativeLang, settings, skipCache = false) {
+async function handleTranslate(text, targetLang, nativeLang, settings, context = [], skipCache = false) {
     if (!text || !text.trim()) return '';
 
     const cacheKey = makeCacheKey('tr', text, targetLang, nativeLang);
@@ -125,15 +125,49 @@ async function handleTranslate(text, targetLang, nativeLang, settings, skipCache
 
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
-    const system = `You are a professional translator. Translate the ${tName} text to ${nName}. Output ONLY the translation, nothing else.`;
+
+    // ── Build high-quality subtitle translation prompt ─────────────────────────
+    //
+    // Key principles:
+    //  1. This is SPOKEN language — match colloquial register, not formal text
+    //  2. Aim for idiomatic target-language phrasing, not word-for-word
+    //  3. Include recent subtitle context so the model understands the topic
+    //  4. Keep translations concise enough to read quickly as subtitles
+    //
+    const system = `You are an expert subtitle translator. Your task is to translate ${tName} spoken subtitles into natural, fluent ${nName}.
+
+Core rules:
+- This is SPOKEN language from a video — sound natural and conversational, not like a textbook
+- NEVER translate word-for-word; convey the true meaning and intent naturally
+- Match the speaker's register: casual → colloquial ${nName}; technical → clear technical ${nName}; humorous → preserve the humor
+- Keep the translation concise — subtitles must be easy to read at a glance
+- Handle incomplete sentences, filler words (um, uh, well, so), and spoken quirks gracefully
+- Output ONLY the translated subtitle text, with no explanation, no quotes, no extra punctuation`;
+
+    // Build context block from recent subtitles
+    let contextBlock = '';
+    if (context && context.length > 0) {
+        const lines = context
+            .slice(-5)
+            .map(c => `  [${c.original}] → [${c.translated}]`)
+            .join('\n');
+        contextBlock = `\n\nRecent subtitles for context (do NOT translate these again):\n${lines}\n`;
+    }
+
+    const userMsg = `${contextBlock}\nTranslate this subtitle:\n${text}`;
 
     let translation;
     if (settings.aiProvider === 'local') {
-        const prompt = `Translate the following ${tName} text to ${nName}. Output ONLY the translation:\n\n${text}`;
-        translation = await fetchOllama(prompt, settings);
+        const fullPrompt = `${system}\n\n${userMsg}`;
+        translation = await fetchOllama(fullPrompt, settings);
     } else {
-        translation = await fetchOpenAI(system, text, settings);
+        translation = await fetchOpenAI(system, userMsg, settings);
     }
+
+    // Strip any accidental quotes the model might add
+    translation = (translation || '')
+        .trim()
+        .replace(/^["「『]|["」』]$/g, '');
 
     if (translation) await setCache(cacheKey, translation);
     return translation;
