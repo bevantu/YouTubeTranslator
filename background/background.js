@@ -65,7 +65,10 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'translate') {
-        handleTranslate(message.text, message.targetLang, message.nativeLang, message.settings, message.context || [])
+        handleTranslate(
+            message.text, message.targetLang, message.nativeLang,
+            message.settings, message.context || [], false, message.mode || 'quality'
+        )
             .then(result => sendResponse({ success: true, result }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -114,7 +117,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ─── Translation ──────────────────────────────────────────────────────────────
 
-async function handleTranslate(text, targetLang, nativeLang, settings, context = [], skipCache = false) {
+async function handleTranslate(text, targetLang, nativeLang, settings, context = [], skipCache = false, mode = 'quality') {
     if (!text || !text.trim()) return '';
 
     const cacheKey = makeCacheKey('tr', text, targetLang, nativeLang);
@@ -126,16 +129,6 @@ async function handleTranslate(text, targetLang, nativeLang, settings, context =
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
 
-    const system = `You are an expert subtitle translator (${tName} to ${nName}).
-Use the Translate-Reflect-Refine workflow:
-1. Initial Translation: translate accurately and colloquially.
-2. Reflection: critique the flow, tone, and conciseness.
-3. Refined Translation: produce the final polished subtitle.
-
-CRITICAL RULES:
-- For long sentences, YOU MUST insert line breaks (\\n) at natural semantic pauses so it displays as easy-to-read chunks.
-- Output the final result ONLY inside <FINAL></FINAL> tags. Everything else will be ignored.`;
-
     // Build context block from recent subtitles
     let contextBlock = '';
     if (context && context.length > 0) {
@@ -143,28 +136,52 @@ CRITICAL RULES:
             .slice(-5)
             .map(c => `  [${c.original}] → [${c.translated}]`)
             .join('\n');
-        contextBlock = `\n\nRecent subtitles for context (do NOT translate these again):\n${lines}\n`;
+        contextBlock = `\n\nRecent subtitles (do NOT retranslate):\n${lines}\n`;
     }
 
-    const userMsg = `${contextBlock}\nTranslate this subtitle:\n${text}`;
+    let system, userMsg, translation;
 
-    let translation;
-    if (settings.aiProvider === 'local') {
-        const fullPrompt = `${system}\n\n${userMsg}`;
-        translation = await fetchOllama(fullPrompt, settings);
+    if (mode === 'fast') {
+        // ── Fast mode ────────────────────────────────────────────────────
+        // For real-time fallback when subtitle is already on screen.
+        // Single-pass, minimal prompt, strict token cap.
+        system = `Translate ${tName} subtitle to natural spoken ${nName}. Output ONLY the translation.`;
+        userMsg = `${contextBlock}\n${text}`;
+
+        if (settings.aiProvider === 'local') {
+            translation = await fetchOllama(`${system}\n\n${userMsg}`, settings, 120);
+        } else {
+            translation = await fetchOpenAI(system, userMsg, settings, 200);
+        }
     } else {
-        translation = await fetchOpenAI(system, userMsg, settings);
+        // ── Quality mode (default) ────────────────────────────────────────
+        // Used during pre-translation where we have plenty of time.
+        // Translate-Reflect-Refine for natural, contextual output.
+        system = `You are an expert subtitle translator (${tName} to ${nName}).
+Use the Translate-Reflect-Refine workflow:
+1. Initial Translation: translate accurately and colloquially.
+2. Reflection: critique the flow, tone, and conciseness.
+3. Refined Translation: produce the final polished subtitle.
+
+CRITICAL RULES:
+- Natural spoken ${nName}, NOT word-for-word.
+- For long sentences, insert line breaks (\\n) at natural semantic pauses.
+- Output the final result ONLY inside <FINAL></FINAL> tags.`;
+        userMsg = `${contextBlock}\nTranslate this subtitle:\n${text}`;
+
+        if (settings.aiProvider === 'local') {
+            translation = await fetchOllama(`${system}\n\n${userMsg}`, settings, 800);
+        } else {
+            translation = await fetchOpenAI(system, userMsg, settings, 1000);
+        }
+
+        // Extract from <FINAL> tags
+        const match = (translation || '').match(/<FINAL>([\s\S]*?)<\/FINAL>/i);
+        if (match) translation = match[1];
     }
 
-    // Extract the final translation from the <FINAL> tags if the model respected the prompt
-    let finalOutput = translation || '';
-    const match = finalOutput.match(/<FINAL>([\s\S]*?)<\/FINAL>/i);
-    if (match) {
-        finalOutput = match[1];
-    }
-
-    // Strip any accidental quotes or whitespace
-    translation = finalOutput
+    // Strip accidental quotes or whitespace
+    translation = (translation || '')
         .trim()
         .replace(/^["「『]|["」』]$/g, '');
 
@@ -210,7 +227,7 @@ Where translation and explanation are in ${nName}.`;
 
 // ─── Fetch: OpenAI-compatible ─────────────────────────────────────────────────
 
-async function fetchOpenAI(system, user, settings) {
+async function fetchOpenAI(system, user, settings, maxTokens = 1000) {
     const res = await fetch(settings.apiEndpoint, {
         method: 'POST',
         headers: {
@@ -224,7 +241,7 @@ async function fetchOpenAI(system, user, settings) {
                 { role: 'user', content: user }
             ],
             temperature: 0.3,
-            max_tokens: 1000
+            max_tokens: maxTokens
         })
     });
 
@@ -239,7 +256,7 @@ async function fetchOpenAI(system, user, settings) {
 
 // ─── Fetch: Ollama (/api/generate) ───────────────────────────────────────────
 
-async function fetchOllama(prompt, settings) {
+async function fetchOllama(prompt, settings, numPredict = 800) {
     const endpoint = settings.localEndpoint || 'http://localhost:11434/api/generate';
 
     if (endpoint.includes('/api/generate')) {
@@ -253,7 +270,7 @@ async function fetchOllama(prompt, settings) {
                 stream: false,
                 keep_alive: '60m',  // keep model in GPU memory for 60 min after each use
                 options: {
-                    num_predict: 800,  // Need enough tokens for translate + reflect + refine
+                    num_predict: numPredict,  // Controlled per-mode: 120 (fast) or 800 (quality)
                     num_ctx: 2048,     // small context window = fast prefill
                     temperature: 0.3
                 }

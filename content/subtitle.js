@@ -108,44 +108,56 @@ const SubtitleManager = {
     },
 
     /**
-     * Pre-translate all subtitles sequentially in the background.
-     * By the time the viewer reaches each subtitle, its translation
-     * is already cached on the entry — zero latency for the user.
+     * Pre-translate subtitles in the background with CONCURRENCY.
+     * Uses 'quality' mode (Translate-Reflect-Refine) since we have time.
+     * Runs BATCH_SIZE requests in parallel for ~3x speed boost.
      */
     async startPreTranslation() {
         this.preTranslating = true;
-        console.log('[YT Bilingual] Pre-translation started');
+        console.log('[YT Bilingual] Pre-translation started (concurrent)');
+        const BATCH_SIZE = 3; // 3 requests in parallel
 
-        for (let i = 0; i < this.captions.length; i++) {
-            if (!this.preTranslating) break; // cancelled by destroy() or new load
-
-            const entry = this.captions[i];
-            if (entry.translation !== null) continue; // already translated
-
-            entry.translation = '__pending__';
-            try {
-                const ctx = this.contextBuffer.slice(-3);
-                const translation = await TranslatorService.translate(
-                    entry.text,
-                    this.settings.targetLanguage,
-                    this.settings.nativeLanguage,
-                    this.settings,
-                    ctx
-                );
-                entry.translation = translation || '';
-                if (translation) {
-                    this.contextBuffer.push({ original: entry.text, translated: translation });
-                    if (this.contextBuffer.length > 8) this.contextBuffer.shift();
-                    // If this subtitle is currently visible, update the display
-                    if (this.lastRenderedText === entry.text) {
-                        this.renderSubtitle(entry.text, translation, false);
-                    }
+        let i = 0;
+        while (i < this.captions.length && this.preTranslating) {
+            // Collect next batch of untranslated entries
+            const batch = [];
+            while (batch.length < BATCH_SIZE && i < this.captions.length) {
+                const entry = this.captions[i];
+                if (entry.translation === null) {
+                    entry.translation = '__pending__';
+                    batch.push({ entry, index: i });
                 }
-            } catch (err) {
-                console.warn('[YT Bilingual] Pre-translate failed:', err.message);
-                entry.translation = ''; // reset so it can retry on-demand
+                i++;
             }
-            // Tiny yield so timeupdate/UI remain responsive
+            if (!batch.length) continue;
+
+            // Fire all in parallel
+            const ctx = this.contextBuffer.slice(-3);
+            await Promise.allSettled(batch.map(async ({ entry }) => {
+                try {
+                    const translation = await TranslatorService.translate(
+                        entry.text,
+                        this.settings.targetLanguage,
+                        this.settings.nativeLanguage,
+                        this.settings,
+                        ctx,
+                        'quality' // high-quality TRR mode
+                    );
+                    entry.translation = translation || '';
+                    if (translation) {
+                        this.contextBuffer.push({ original: entry.text, translated: translation });
+                        if (this.contextBuffer.length > 8) this.contextBuffer.shift();
+                        if (this.lastRenderedText === entry.text) {
+                            this.renderSubtitle(entry.text, translation, false);
+                        }
+                    }
+                } catch (err) {
+                    console.warn('[YT Bilingual] Pre-translate failed:', err.message);
+                    entry.translation = '';
+                }
+            }));
+
+            // Tiny yield so UI stays responsive
             await new Promise(r => setTimeout(r, 10));
         }
         this.preTranslating = false;
@@ -353,7 +365,8 @@ const SubtitleManager = {
                 this.settings.targetLanguage,
                 this.settings.nativeLanguage,
                 this.settings,
-                recentContext
+                recentContext,
+                'fast' // real-time: use fast single-pass mode (120 tokens)
             ).then(translation => {
                 entry.translation = translation || '';
                 // Update display only if this entry is still on screen
