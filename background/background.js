@@ -235,7 +235,20 @@ Where translation and explanation are in ${nName}.`;
 // ─── Fetch: OpenAI-compatible ─────────────────────────────────────────────────
 
 async function fetchOpenAI(system, user, settings, maxTokens = 1000) {
-    const res = await fetch(settings.apiEndpoint, {
+    // Auto-resolve endpoint: if user just gave base URL, append the right path.
+    // Supports: OpenAI (/v1/chat/completions), DeepSeek (/chat/completions), etc.
+    let endpoint = settings.apiEndpoint.replace(/\/+$/, ''); // strip trailing slashes
+    if (!endpoint.includes('/chat/completions')) {
+        // Try the most common paths
+        // DeepSeek uses /chat/completions, OpenAI uses /v1/chat/completions
+        if (endpoint.includes('deepseek')) {
+            endpoint += '/chat/completions';
+        } else {
+            endpoint += '/v1/chat/completions';
+        }
+    }
+
+    const res = await fetch(endpoint, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
