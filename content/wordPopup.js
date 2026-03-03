@@ -88,26 +88,10 @@ const WordPopup = {
 
         // Need to display block to get actual dimensions
         popup.style.display = 'block';
-        const actualWidth = popup.offsetWidth || 320;
-        const actualHeight = popup.offsetHeight || 100;
 
-        // Position popup near the word
-        const rect = wordElement.getBoundingClientRect();
-
-        let left = rect.left + rect.width / 2 - actualWidth / 2;
-        let top = rect.top - actualHeight - 10;
-
-        // Keep popup within viewport horizontally
-        if (left < 10) left = 10;
-        if (left + actualWidth > window.innerWidth - 10) left = window.innerWidth - actualWidth - 10;
-
-        // Vertically: if it goes off top, put it BELOW the word
-        if (top < 10) {
-            top = rect.bottom + 10;
-        }
-
-        popup.style.left = `${left}px`;
-        popup.style.top = `${top}px`;
+        // Store the word element reference for repositioning
+        this.currentWordElement = wordElement;
+        this.repositionPopup();
 
         // Update word status buttons
         const wordStatus = await StorageHelper.getWordStatus(word, targetLang);
@@ -139,6 +123,9 @@ const WordPopup = {
                 popup.querySelector('.yb-popup-explanation').style.display = 'block';
             }
 
+            // Reposition after content loaded (popup is now taller)
+            this.repositionPopup();
+
             // Save definition
             if (definition.translation && wordStatus) {
                 await StorageHelper.saveWord(word, wordStatus.status, definition.translation, targetLang);
@@ -147,6 +134,7 @@ const WordPopup = {
             popup.querySelector('.yb-popup-loading').style.display = 'none';
             popup.querySelector('.yb-popup-translation').textContent = '(Failed to load definition)';
             popup.querySelector('.yb-popup-translation').style.display = 'block';
+            this.repositionPopup();
         }
     },
 
@@ -184,6 +172,35 @@ const WordPopup = {
     },
 
     /**
+     * Reposition popup relative to the current word element.
+     * Called on initial show AND after content loads (height changes).
+     */
+    repositionPopup() {
+        if (!this.popup || !this.currentWordElement) return;
+
+        const popup = this.popup;
+        const rect = this.currentWordElement.getBoundingClientRect();
+        const actualWidth = popup.offsetWidth || 320;
+        const actualHeight = popup.offsetHeight || 100;
+
+        let left = rect.left + rect.width / 2 - actualWidth / 2;
+        // Position ABOVE the word with 10px gap
+        let top = rect.top - actualHeight - 10;
+
+        // Keep popup within viewport horizontally
+        if (left < 10) left = 10;
+        if (left + actualWidth > window.innerWidth - 10) left = window.innerWidth - actualWidth - 10;
+
+        // If it goes off top of screen, put it BELOW the word instead
+        if (top < 10) {
+            top = rect.bottom + 10;
+        }
+
+        popup.style.left = `${left}px`;
+        popup.style.top = `${top}px`;
+    },
+
+    /**
      * Hide popup
      */
     hide() {
@@ -191,5 +208,6 @@ const WordPopup = {
             this.popup.style.display = 'none';
         }
         this.currentWord = null;
+        this.currentWordElement = null;
     }
 };
