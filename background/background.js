@@ -108,7 +108,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return true;
         }
         // skipCache=true so we always make a real network request
-        handleTranslate('太棒了，成功了', 'en', 'zh', s, true)
+        handleTranslate('太棒了，成功了', 'en', 'zh', s, [], true, 'fast')
             .then(result => sendResponse({ success: true, result }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
