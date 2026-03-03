@@ -383,10 +383,38 @@ const SubtitleManager = {
                     span.className = 'yb-word';
                     span.textContent = token;
 
-                    const key = `${settings.targetLanguage}:${token.toLowerCase()}`;
+                    const lToken = token.toLowerCase();
+                    const key = `${settings.targetLanguage}:${lToken}`;
                     const entry = this.vocabulary[key];
+
+                    let isKnown = false;
+                    let isLearning = false;
+
                     if (entry) {
-                        span.classList.add(entry.status === 'known' ? 'yb-word-known' : 'yb-word-learning');
+                        isKnown = entry.status === 'known';
+                        isLearning = entry.status === 'learning';
+                    } else if (settings.targetLanguage === 'en' && settings.proficiencyLevel && settings.proficiencyLevel !== 'none' && window.WordLevels) {
+                        const lvl = settings.proficiencyLevel;
+                        const WL = window.WordLevels;
+
+                        // Check incrementally up to the user's level
+                        const inPrimary = WL.primary.includes(lToken);
+                        const inMiddle = inPrimary || WL.middle.includes(lToken);
+                        const inHigh = inMiddle || WL.high.includes(lToken);
+                        const inCet4 = inHigh || WL.cet4.includes(lToken);
+                        const inCet6 = inCet4 || WL.cet6.includes(lToken);
+
+                        if (lvl === 'primary' && inPrimary) isKnown = true;
+                        else if (lvl === 'middle' && inMiddle) isKnown = true;
+                        else if (lvl === 'high' && inHigh) isKnown = true;
+                        else if (lvl === 'cet4' && inCet4) isKnown = true;
+                        else if (lvl === 'cet6' && inCet6) isKnown = true;
+                    }
+
+                    if (isKnown) {
+                        span.classList.add('yb-word-known');
+                    } else if (isLearning) {
+                        span.classList.add('yb-word-learning');
                     } else {
                         span.classList.add('yb-word-unknown');
                     }

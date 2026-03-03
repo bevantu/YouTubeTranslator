@@ -105,7 +105,11 @@ const WordPopup = {
 
         // Update word status buttons
         const wordStatus = await StorageHelper.getWordStatus(word, targetLang);
-        this.updateButtons(wordStatus?.status);
+        const isKnown = await StorageHelper.isWordKnown(word, targetLang, settings.proficiencyLevel);
+
+        // Explicit status > Implicit known level > defaults to unknown
+        let effectiveStatus = wordStatus ? wordStatus.status : (isKnown ? 'known' : 'unknown');
+        this.updateButtons(effectiveStatus);
 
         // Get definition
         try {

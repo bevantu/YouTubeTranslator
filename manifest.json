@@ -39,6 +39,7 @@
         "content/content.css"
       ],
       "js": [
+        "lib/wordlevels.js",
         "lib/languages.js",
         "lib/storage.js",
         "lib/translator.js",

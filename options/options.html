@@ -74,9 +74,12 @@
                     <div class="form-group">
                         <label class="form-label" for="proficiencyLevel">Proficiency Level</label>
                         <select id="proficiencyLevel" class="form-select">
-                            <option value="beginner">🌱 Beginner (A1-A2) — Most words are new to you</option>
-                            <option value="intermediate">📗 Intermediate (B1-B2) — You know common words</option>
-                            <option value="advanced">🎓 Advanced (C1-C2) — You know most words</option>
+                            <option value="none">👶 Zero Basics (None)</option>
+                            <option value="primary">🎒 小学词汇 (Primary School)</option>
+                            <option value="middle">🏫 初中词汇 (Middle School)</option>
+                            <option value="high">🎓 高中词汇 (High School)</option>
+                            <option value="cet4">📝 大学英语四级 (CET-4)</option>
+                            <option value="cet6">🏆 大学英语六级 (CET-6)</option>
                         </select>
                     </div>
                 </div>
@@ -282,6 +285,7 @@
         </main>
     </div>
 
+    <script src="../lib/wordlevels.js"></script>
     <script src="../lib/languages.js"></script>
     <script src="../lib/storage.js"></script>
     <script src="../lib/translator.js"></script>

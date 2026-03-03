@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>YouTube Bilingual Subtitles</title>
   <link rel="stylesheet" href="popup.css">
 </head>
+
 <body>
   <div class="popup-container">
     <header class="popup-header">
@@ -70,9 +72,12 @@
       <div class="popup-section">
         <label class="popup-label">Proficiency Level</label>
         <select id="proficiencyLevel" class="popup-select">
-          <option value="beginner">Beginner (A1-A2)</option>
-          <option value="intermediate">Intermediate (B1-B2)</option>
-          <option value="advanced">Advanced (C1-C2)</option>
+          <option value="none">Zero Basics</option>
+          <option value="primary">小学 (Primary)</option>
+          <option value="middle">初中 (Middle)</option>
+          <option value="high">高中 (High)</option>
+          <option value="cet4">四级 (CET-4)</option>
+          <option value="cet6">六级 (CET-6)</option>
         </select>
       </div>
 
@@ -100,8 +105,10 @@
     </div>
   </div>
 
+  <script src="../lib/wordlevels.js"></script>
   <script src="../lib/languages.js"></script>
   <script src="../lib/storage.js"></script>
   <script src="popup.js"></script>
 </body>
+
 </html>
