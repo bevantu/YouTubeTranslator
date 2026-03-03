@@ -100,26 +100,142 @@ const SubtitleManager = {
         // Hide YouTube's own caption layer
         this.hideNativeCaptions(true);
 
-        // Start background pre-translation immediately
+        // Start background pre-translation with warmup phase
         if (this.settings.autoTranslate) {
-            // Small delay so the video player has time to start
-            setTimeout(() => this.startPreTranslation(), 800);
+            setTimeout(() => this.warmupAndTranslate(), 500);
         }
     },
 
     /**
-     * Pre-translate subtitles in the background with CONCURRENCY.
-     * Uses 'quality' mode (Translate-Reflect-Refine) since we have time.
-     * Runs BATCH_SIZE requests in parallel for ~3x speed boost.
+     * Phase 1: Pause video, pre-translate the first WARMUP_COUNT subtitles,
+     * show progress overlay, then resume and continue pre-translating the rest.
+     * This ensures ALL displayed subtitles are high-quality (TRR).
      */
-    async startPreTranslation() {
-        this.preTranslating = true;
-        console.log('[YT Bilingual] Pre-translation started (concurrent)');
-        const BATCH_SIZE = 3; // 3 requests in parallel
+    async warmupAndTranslate() {
+        const WARMUP_COUNT = 8; // ~30-60 seconds of video
+        const video = document.querySelector('video');
+        const wasPlaying = video && !video.paused;
 
+        // Pause video during warmup
+        if (video && !video.paused) {
+            video.pause();
+        }
+
+        // Show warmup overlay
+        this.showWarmupOverlay(0, Math.min(WARMUP_COUNT, this.captions.length));
+
+        // Pre-translate first batch sequentially (need context chain)
+        this.preTranslating = true;
+        let translated = 0;
+        const total = Math.min(WARMUP_COUNT, this.captions.length);
+
+        // Use batches of 3 for concurrency during warmup too
+        const BATCH_SIZE = 3;
         let i = 0;
+        while (i < total && this.preTranslating) {
+            const batch = [];
+            while (batch.length < BATCH_SIZE && i < total) {
+                const entry = this.captions[i];
+                if (entry.translation === null) {
+                    entry.translation = '__pending__';
+                    batch.push(entry);
+                }
+                i++;
+            }
+            if (!batch.length) continue;
+
+            const ctx = this.contextBuffer.slice(-3);
+            await Promise.allSettled(batch.map(async (entry) => {
+                try {
+                    const translation = await TranslatorService.translate(
+                        entry.text,
+                        this.settings.targetLanguage,
+                        this.settings.nativeLanguage,
+                        this.settings,
+                        ctx,
+                        'quality'
+                    );
+                    entry.translation = translation || '';
+                    if (translation) {
+                        this.contextBuffer.push({ original: entry.text, translated: translation });
+                        if (this.contextBuffer.length > 8) this.contextBuffer.shift();
+                    }
+                } catch (err) {
+                    console.warn('[YT Bilingual] Warmup translate failed:', err.message);
+                    entry.translation = '';
+                }
+                translated++;
+                this.showWarmupOverlay(translated, total);
+            }));
+        }
+
+        // Remove overlay and resume video
+        this.hideWarmupOverlay();
+        if (wasPlaying && video) {
+            video.play();
+        }
+
+        console.log(`[YT Bilingual] Warmup complete (${translated}/${total}), resuming playback`);
+
+        // Phase 2: continue pre-translating the remaining subtitles
+        this.startPreTranslation(total);
+    },
+
+    /**
+     * Show a small overlay indicating warmup progress.
+     */
+    showWarmupOverlay(done, total) {
+        let overlay = document.getElementById('yb-warmup-overlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'yb-warmup-overlay';
+            overlay.style.cssText = `
+                position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
+                z-index: 99998; background: rgba(15, 15, 20, 0.95);
+                backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+                padding: 12px 24px; border-radius: 12px;
+                border: 1px solid rgba(99, 102, 241, 0.3);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(99, 102, 241, 0.1);
+                font-family: 'Inter', 'Segoe UI', sans-serif; color: #f0f0f5;
+                font-size: 14px; display: flex; align-items: center; gap: 12px;
+                animation: yb-fadeIn 0.3s ease;
+            `;
+            document.body.appendChild(overlay);
+        }
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        overlay.innerHTML = `
+            <div style="width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.1);
+                border-top-color: #6366f1; border-radius: 50%;
+                animation: yb-spin 0.8s linear infinite;"></div>
+            <span>Preparing translations... <strong>${done}/${total}</strong></span>
+            <div style="width: 80px; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden;">
+                <div style="width: ${pct}%; height: 100%; background: linear-gradient(90deg, #6366f1, #818cf8);
+                    border-radius: 2px; transition: width 0.3s ease;"></div>
+            </div>
+        `;
+    },
+
+    hideWarmupOverlay() {
+        const overlay = document.getElementById('yb-warmup-overlay');
+        if (overlay) {
+            overlay.style.opacity = '0';
+            overlay.style.transition = 'opacity 0.3s ease';
+            setTimeout(() => overlay.remove(), 300);
+        }
+    },
+
+    /**
+     * Pre-translate remaining subtitles in the background with CONCURRENCY.
+     * Uses 'quality' mode (Translate-Reflect-Refine) since we have time.
+     * @param {number} startFrom - Index to start from (after warmup)
+     */
+    async startPreTranslation(startFrom = 0) {
+        this.preTranslating = true;
+        console.log(`[YT Bilingual] Background pre-translation from index ${startFrom}`);
+        const BATCH_SIZE = 3;
+
+        let i = startFrom;
         while (i < this.captions.length && this.preTranslating) {
-            // Collect next batch of untranslated entries
             const batch = [];
             while (batch.length < BATCH_SIZE && i < this.captions.length) {
                 const entry = this.captions[i];
@@ -131,7 +247,6 @@ const SubtitleManager = {
             }
             if (!batch.length) continue;
 
-            // Fire all in parallel
             const ctx = this.contextBuffer.slice(-3);
             await Promise.allSettled(batch.map(async ({ entry }) => {
                 try {
@@ -141,7 +256,7 @@ const SubtitleManager = {
                         this.settings.nativeLanguage,
                         this.settings,
                         ctx,
-                        'quality' // high-quality TRR mode
+                        'quality'
                     );
                     entry.translation = translation || '';
                     if (translation) {
@@ -157,7 +272,6 @@ const SubtitleManager = {
                 }
             }));
 
-            // Tiny yield so UI stays responsive
             await new Promise(r => setTimeout(r, 10));
         }
         this.preTranslating = false;
@@ -359,26 +473,24 @@ const SubtitleManager = {
         // Use '__pending__' sentinel to prevent duplicate in-flight requests.
         if (needsTranslation) {
             entry.translation = '__pending__'; // lock so timeupdate doesn't re-queue
-            const recentContext = this.contextBuffer.slice(-5); // last 5 subtitles
+            const recentContext = this.contextBuffer.slice(-5);
             TranslatorService.translate(
                 entry.text,
                 this.settings.targetLanguage,
                 this.settings.nativeLanguage,
                 this.settings,
                 recentContext,
-                'fast' // real-time: use fast single-pass mode (120 tokens)
+                'quality' // always use quality mode — warmup ensures we rarely reach here
             ).then(translation => {
                 entry.translation = translation || '';
-                // Update display only if this entry is still on screen
                 if (this.lastRenderedText === entry.text && translation) {
-                    // Add to context buffer once translation is done
                     this.contextBuffer.push({ original: entry.text, translated: translation });
                     if (this.contextBuffer.length > 8) this.contextBuffer.shift();
                     this.renderSubtitle(entry.text, translation, false);
                 }
             }).catch(err => {
                 console.error('[YT Bilingual] Translation error:', err);
-                entry.translation = ''; // unlock so it can retry next time
+                entry.translation = '';
             });
         }
     },
