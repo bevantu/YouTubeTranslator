@@ -86,22 +86,28 @@ const WordPopup = {
         popup.querySelector('.yb-popup-body .yb-popup-translation').style.display = 'none';
         popup.querySelector('.yb-popup-body .yb-popup-explanation').style.display = 'none';
 
+        // Need to display block to get actual dimensions
+        popup.style.display = 'block';
+        const actualWidth = popup.offsetWidth || 320;
+        const actualHeight = popup.offsetHeight || 100;
+
         // Position popup near the word
         const rect = wordElement.getBoundingClientRect();
-        const popupWidth = 320;
-        const popupHeight = 250;
 
-        let left = rect.left + rect.width / 2 - popupWidth / 2;
-        let top = rect.top - popupHeight - 10;
+        let left = rect.left + rect.width / 2 - actualWidth / 2;
+        let top = rect.top - actualHeight - 10;
 
-        // Keep popup within viewport
+        // Keep popup within viewport horizontally
         if (left < 10) left = 10;
-        if (left + popupWidth > window.innerWidth - 10) left = window.innerWidth - popupWidth - 10;
-        if (top < 10) top = rect.bottom + 10;
+        if (left + actualWidth > window.innerWidth - 10) left = window.innerWidth - actualWidth - 10;
+
+        // Vertically: if it goes off top, put it BELOW the word
+        if (top < 10) {
+            top = rect.bottom + 10;
+        }
 
         popup.style.left = `${left}px`;
         popup.style.top = `${top}px`;
-        popup.style.display = 'block';
 
         // Update word status buttons
         const wordStatus = await StorageHelper.getWordStatus(word, targetLang);

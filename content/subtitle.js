@@ -197,10 +197,25 @@ const SubtitleManager = {
             if (t) sentences.push({ startMs: sentStart, endMs: endMs || sentEnd, text: t, translation: null });
         };
 
-        // Split accText at the FIRST embedded sentence boundary
+        // Split accText at the FIRST embedded sentence boundary or conjunction
         // e.g. "...in tech. You need real" -> split into two entries
         const splitEmbedded = (approxMs) => {
-            const m = accText.match(/^([\s\S]*?[.!?。！？])\s+([\s\S]+)$/);
+            let m = accText.match(/^([\s\S]*?[.!?。！？])\s+([\s\S]+)$/);
+
+            // If it's getting too long, also split at major conjunctions
+            if (!m && accText.length > 70) {
+                // look for ' and ', ' but ', ' so ', ' because ', etc. near the middle
+                const minIdx = Math.floor(accText.length * 0.4);
+                const match = accText.slice(minIdx).match(/\s+(and|but|so|because|where|which|that)\s+/i);
+                if (match) {
+                    const idx = minIdx + match.index;
+                    m = [
+                        accText,
+                        accText.slice(0, idx).trim(),
+                        accText.slice(idx + 1).trim() // keep the conjunction in the second part
+                    ];
+                }
+            }
             if (!m) return false;
             sentences.push({ startMs: sentStart, endMs: approxMs, text: m[1].trim(), translation: null });
             sentStart = approxMs;
@@ -394,21 +409,36 @@ const SubtitleManager = {
                         isKnown = entry.status === 'known';
                         isLearning = entry.status === 'learning';
                     } else if (settings.targetLanguage === 'en' && settings.proficiencyLevel && settings.proficiencyLevel !== 'none' && window.WordLevels) {
-                        const lvl = settings.proficiencyLevel;
-                        const WL = window.WordLevels;
+                        // Clean token for comparison
+                        let checkToken = lToken.replace(/^['"[(]+|['"\]).,!?]+$/g, '');
+                        const suffixes = ["'s", "'ve", "'re", "'m", "'ll", "'d", "n't"];
+                        for (const suf of suffixes) {
+                            if (checkToken.endsWith(suf)) {
+                                checkToken = checkToken.slice(0, -suf.length);
+                                break;
+                            }
+                        }
 
-                        // Check incrementally up to the user's level
-                        const inPrimary = WL.primary.includes(lToken);
-                        const inMiddle = inPrimary || WL.middle.includes(lToken);
-                        const inHigh = inMiddle || WL.high.includes(lToken);
-                        const inCet4 = inHigh || WL.cet4.includes(lToken);
-                        const inCet6 = inCet4 || WL.cet6.includes(lToken);
+                        // Hardcode extremely common words that frequency lists might skip due to length filtering
+                        if (["i", "a", "an", "the", "to", "and", "of", "in", "is", "it", "you", "that"].includes(checkToken)) {
+                            isKnown = true;
+                        } else {
+                            const lvl = settings.proficiencyLevel;
+                            const WL = window.WordLevels;
 
-                        if (lvl === 'primary' && inPrimary) isKnown = true;
-                        else if (lvl === 'middle' && inMiddle) isKnown = true;
-                        else if (lvl === 'high' && inHigh) isKnown = true;
-                        else if (lvl === 'cet4' && inCet4) isKnown = true;
-                        else if (lvl === 'cet6' && inCet6) isKnown = true;
+                            // Check incrementally up to the user's level
+                            const inPrimary = WL.primary.includes(checkToken);
+                            const inMiddle = inPrimary || WL.middle.includes(checkToken);
+                            const inHigh = inMiddle || WL.high.includes(checkToken);
+                            const inCet4 = inHigh || WL.cet4.includes(checkToken);
+                            const inCet6 = inCet4 || WL.cet6.includes(checkToken);
+
+                            if (lvl === 'primary' && inPrimary) isKnown = true;
+                            else if (lvl === 'middle' && inMiddle) isKnown = true;
+                            else if (lvl === 'high' && inHigh) isKnown = true;
+                            else if (lvl === 'cet4' && inCet4) isKnown = true;
+                            else if (lvl === 'cet6' && inCet6) isKnown = true;
+                        }
                     }
 
                     if (isKnown) {

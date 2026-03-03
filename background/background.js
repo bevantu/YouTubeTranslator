@@ -126,13 +126,15 @@ async function handleTranslate(text, targetLang, nativeLang, settings, context =
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
 
-    // Concise but high-quality subtitle translation prompt.
-    // Shorter prompt = faster prefill (critical for small local models).
-    const system = `Subtitle translator: ${tName} → ${nName}. Rules:
-- Natural spoken ${nName}, NOT word-for-word
-- Match tone (casual/technical/humorous)
-- Concise, readable at a glance
-- Output ONLY the translation, no quotes, no explanation`;
+    const system = `You are an expert subtitle translator (${tName} to ${nName}).
+Use the Translate-Reflect-Refine workflow:
+1. Initial Translation: translate accurately and colloquially.
+2. Reflection: critique the flow, tone, and conciseness.
+3. Refined Translation: produce the final polished subtitle.
+
+CRITICAL RULES:
+- For long sentences, YOU MUST insert line breaks (\\n) at natural semantic pauses so it displays as easy-to-read chunks.
+- Output the final result ONLY inside <FINAL></FINAL> tags. Everything else will be ignored.`;
 
     // Build context block from recent subtitles
     let contextBlock = '';
@@ -154,8 +156,15 @@ async function handleTranslate(text, targetLang, nativeLang, settings, context =
         translation = await fetchOpenAI(system, userMsg, settings);
     }
 
-    // Strip any accidental quotes the model might add
-    translation = (translation || '')
+    // Extract the final translation from the <FINAL> tags if the model respected the prompt
+    let finalOutput = translation || '';
+    const match = finalOutput.match(/<FINAL>([\s\S]*?)<\/FINAL>/i);
+    if (match) {
+        finalOutput = match[1];
+    }
+
+    // Strip any accidental quotes or whitespace
+    translation = finalOutput
         .trim()
         .replace(/^["「『]|["」』]$/g, '');
 
@@ -215,7 +224,7 @@ async function fetchOpenAI(system, user, settings) {
                 { role: 'user', content: user }
             ],
             temperature: 0.3,
-            max_tokens: 300
+            max_tokens: 1000
         })
     });
 
@@ -244,7 +253,7 @@ async function fetchOllama(prompt, settings) {
                 stream: false,
                 keep_alive: '60m',  // keep model in GPU memory for 60 min after each use
                 options: {
-                    num_predict: 200,  // subtitle translation is always short; cap output
+                    num_predict: 800,  // Need enough tokens for translate + reflect + refine
                     num_ctx: 2048,     // small context window = fast prefill
                     temperature: 0.3
                 }
