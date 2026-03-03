@@ -1,10 +1,15 @@
 /**
  * Word Popup Component
- * Shows word definition when clicking on a subtitle word
+ * Shows word definition when clicking on a subtitle word.
+ * Two sections:
+ *   1. Dictionary (instant, from free dictionaryapi.dev)
+ *   2. AI Context (slower, LLM-powered contextual explanation)
  */
 const WordPopup = {
     popup: null,
     currentWord: null,
+    currentLang: null,
+    currentWordElement: null,
 
     /**
      * Initialize the popup
@@ -26,17 +31,37 @@ const WordPopup = {
       <div class="yb-popup-header">
         <span class="yb-popup-word"></span>
         <span class="yb-popup-pronunciation"></span>
+        <button class="yb-popup-audio-btn" title="Play pronunciation" style="display:none;">🔊</button>
         <button class="yb-popup-close" title="Close">✕</button>
       </div>
-      <div class="yb-popup-body">
-        <div class="yb-popup-pos"></div>
-        <div class="yb-popup-translation"></div>
-        <div class="yb-popup-explanation"></div>
-        <div class="yb-popup-loading">
-          <div class="yb-spinner"></div>
-          <span>Loading definition...</span>
+
+      <!-- Section 1: Dictionary definitions (instant) -->
+      <div class="yb-popup-dict">
+        <div class="yb-popup-dict-loading">
+          <div class="yb-spinner-sm"></div>
+          <span>Loading dictionary...</span>
+        </div>
+        <div class="yb-popup-dict-content" style="display:none;"></div>
+        <div class="yb-popup-dict-empty" style="display:none;">
+          <span style="opacity: 0.5;">No dictionary entry found</span>
         </div>
       </div>
+
+      <div class="yb-popup-divider"></div>
+
+      <!-- Section 2: AI contextual definition (slower) -->
+      <div class="yb-popup-ai">
+        <div class="yb-popup-ai-label">✨ AI Contextual Analysis</div>
+        <div class="yb-popup-ai-loading">
+          <div class="yb-spinner"></div>
+          <span>Analyzing context...</span>
+        </div>
+        <div class="yb-popup-ai-content" style="display:none;">
+          <div class="yb-popup-ai-translation"></div>
+          <div class="yb-popup-ai-explanation"></div>
+        </div>
+      </div>
+
       <div class="yb-popup-actions">
         <button class="yb-btn yb-btn-known" data-status="known">
           <span class="yb-btn-icon">✓</span> Mastered
@@ -53,6 +78,14 @@ const WordPopup = {
         this.popup.querySelector('.yb-popup-close').addEventListener('click', () => this.hide());
         this.popup.querySelector('.yb-btn-known').addEventListener('click', () => this.markWord('known'));
         this.popup.querySelector('.yb-btn-learning').addEventListener('click', () => this.markWord('learning'));
+
+        // Audio button
+        this.popup.querySelector('.yb-popup-audio-btn').addEventListener('click', () => {
+            if (this._audioUrl) {
+                const audio = new Audio(this._audioUrl);
+                audio.play().catch(() => { });
+            }
+        });
 
         // Close on click outside
         document.addEventListener('click', (e) => {
@@ -74,68 +107,132 @@ const WordPopup = {
         this.init();
         this.currentWord = word;
         this.currentLang = targetLang;
+        this._audioUrl = null;
 
         const popup = this.popup;
+
+        // Reset header
         popup.querySelector('.yb-popup-word').textContent = word;
         popup.querySelector('.yb-popup-pronunciation').textContent = '';
-        popup.querySelector('.yb-popup-pos').textContent = '';
-        popup.querySelector('.yb-popup-translation').textContent = '';
-        popup.querySelector('.yb-popup-explanation').textContent = '';
-        popup.querySelector('.yb-popup-loading').style.display = 'flex';
-        popup.querySelector('.yb-popup-body .yb-popup-pos').style.display = 'none';
-        popup.querySelector('.yb-popup-body .yb-popup-translation').style.display = 'none';
-        popup.querySelector('.yb-popup-body .yb-popup-explanation').style.display = 'none';
+        popup.querySelector('.yb-popup-audio-btn').style.display = 'none';
 
-        // Need to display block to get actual dimensions
+        // Reset dict section
+        popup.querySelector('.yb-popup-dict-loading').style.display = 'flex';
+        popup.querySelector('.yb-popup-dict-content').style.display = 'none';
+        popup.querySelector('.yb-popup-dict-content').innerHTML = '';
+        popup.querySelector('.yb-popup-dict-empty').style.display = 'none';
+
+        // Reset AI section
+        popup.querySelector('.yb-popup-ai-loading').style.display = 'flex';
+        popup.querySelector('.yb-popup-ai-content').style.display = 'none';
+        popup.querySelector('.yb-popup-ai-translation').textContent = '';
+        popup.querySelector('.yb-popup-ai-explanation').textContent = '';
+
+        // Show popup and position
         popup.style.display = 'block';
-
-        // Store the word element reference for repositioning
         this.currentWordElement = wordElement;
         this.repositionPopup();
 
         // Update word status buttons
         const wordStatus = await StorageHelper.getWordStatus(word, targetLang);
         const isKnown = await StorageHelper.isWordKnown(word, targetLang, settings.proficiencyLevel);
-
-        // Explicit status > Implicit known level > defaults to unknown
         let effectiveStatus = wordStatus ? wordStatus.status : (isKnown ? 'known' : 'unknown');
         this.updateButtons(effectiveStatus);
 
-        // Get definition
+        // Fire BOTH requests in parallel
+        this.fetchDictionary(word);
+        this.fetchAIDefinition(word, context, targetLang, nativeLang, settings, wordStatus);
+    },
+
+    /**
+     * Fetch dictionary definition (instant)
+     */
+    async fetchDictionary(word) {
+        const popup = this.popup;
         try {
-            const definition = await TranslatorService.getWordDefinition(word, context, targetLang, nativeLang, settings);
+            const response = await chrome.runtime.sendMessage({
+                action: 'dictLookup',
+                word: word
+            });
 
-            popup.querySelector('.yb-popup-loading').style.display = 'none';
+            popup.querySelector('.yb-popup-dict-loading').style.display = 'none';
 
-            if (definition.pronunciation) {
-                popup.querySelector('.yb-popup-pronunciation').textContent = `[${definition.pronunciation}]`;
+            if (response?.success && response.result) {
+                const dict = response.result;
+
+                // Set phonetic in header
+                if (dict.phonetic) {
+                    popup.querySelector('.yb-popup-pronunciation').textContent = dict.phonetic;
+                }
+
+                // Set audio button
+                if (dict.audioUrl) {
+                    this._audioUrl = dict.audioUrl;
+                    popup.querySelector('.yb-popup-audio-btn').style.display = 'inline-block';
+                }
+
+                // Build dictionary content
+                if (dict.meanings && dict.meanings.length) {
+                    const contentEl = popup.querySelector('.yb-popup-dict-content');
+                    let html = '';
+                    for (const meaning of dict.meanings) {
+                        html += `<div class="yb-dict-meaning">`;
+                        html += `<span class="yb-dict-pos">${meaning.pos}</span>`;
+                        for (const def of meaning.definitions) {
+                            html += `<div class="yb-dict-def">${def.def}</div>`;
+                            if (def.example) {
+                                html += `<div class="yb-dict-example">"${def.example}"</div>`;
+                            }
+                        }
+                        html += `</div>`;
+                    }
+                    contentEl.innerHTML = html;
+                    contentEl.style.display = 'block';
+                } else {
+                    popup.querySelector('.yb-popup-dict-empty').style.display = 'block';
+                }
+            } else {
+                popup.querySelector('.yb-popup-dict-empty').style.display = 'block';
             }
-            if (definition.pos) {
-                popup.querySelector('.yb-popup-pos').textContent = definition.pos;
-                popup.querySelector('.yb-popup-pos').style.display = 'block';
-            }
+        } catch (err) {
+            popup.querySelector('.yb-popup-dict-loading').style.display = 'none';
+            popup.querySelector('.yb-popup-dict-empty').style.display = 'block';
+        }
+        this.repositionPopup();
+    },
+
+    /**
+     * Fetch AI contextual definition (slower)
+     */
+    async fetchAIDefinition(word, context, targetLang, nativeLang, settings, wordStatus) {
+        const popup = this.popup;
+        try {
+            const definition = await TranslatorService.getWordDefinition(
+                word, context, targetLang, nativeLang, settings
+            );
+
+            popup.querySelector('.yb-popup-ai-loading').style.display = 'none';
+            const contentEl = popup.querySelector('.yb-popup-ai-content');
+
             if (definition.translation) {
-                popup.querySelector('.yb-popup-translation').textContent = definition.translation;
-                popup.querySelector('.yb-popup-translation').style.display = 'block';
+                popup.querySelector('.yb-popup-ai-translation').textContent = definition.translation;
             }
             if (definition.explanation) {
-                popup.querySelector('.yb-popup-explanation').textContent = definition.explanation;
-                popup.querySelector('.yb-popup-explanation').style.display = 'block';
+                popup.querySelector('.yb-popup-ai-explanation').textContent = definition.explanation;
             }
-
-            // Reposition after content loaded (popup is now taller)
-            this.repositionPopup();
+            contentEl.style.display = 'block';
 
             // Save definition
             if (definition.translation && wordStatus) {
-                await StorageHelper.saveWord(word, wordStatus.status, definition.translation, targetLang);
+                await StorageHelper.saveWord(word, wordStatus.status, definition.translation, this.currentLang);
             }
         } catch (err) {
-            popup.querySelector('.yb-popup-loading').style.display = 'none';
-            popup.querySelector('.yb-popup-translation').textContent = '(Failed to load definition)';
-            popup.querySelector('.yb-popup-translation').style.display = 'block';
-            this.repositionPopup();
+            popup.querySelector('.yb-popup-ai-loading').style.display = 'none';
+            const contentEl = popup.querySelector('.yb-popup-ai-content');
+            popup.querySelector('.yb-popup-ai-translation').textContent = '(Failed to load AI definition)';
+            contentEl.style.display = 'block';
         }
+        this.repositionPopup();
     },
 
     /**
@@ -155,7 +252,7 @@ const WordPopup = {
     async markWord(status) {
         if (!this.currentWord) return;
 
-        const definition = this.popup.querySelector('.yb-popup-translation').textContent || '';
+        const definition = this.popup.querySelector('.yb-popup-ai-translation').textContent || '';
         await StorageHelper.saveWord(this.currentWord, status, definition, this.currentLang);
         this.updateButtons(status);
 
@@ -173,7 +270,6 @@ const WordPopup = {
 
     /**
      * Reposition popup relative to the current word element.
-     * Called on initial show AND after content loads (height changes).
      */
     repositionPopup() {
         if (!this.popup || !this.currentWordElement) return;
@@ -184,14 +280,11 @@ const WordPopup = {
         const actualHeight = popup.offsetHeight || 100;
 
         let left = rect.left + rect.width / 2 - actualWidth / 2;
-        // Position ABOVE the word with 10px gap
         let top = rect.top - actualHeight - 10;
 
-        // Keep popup within viewport horizontally
         if (left < 10) left = 10;
         if (left + actualWidth > window.innerWidth - 10) left = window.innerWidth - actualWidth - 10;
 
-        // If it goes off top of screen, put it BELOW the word instead
         if (top < 10) {
             top = rect.bottom + 10;
         }
@@ -209,5 +302,6 @@ const WordPopup = {
         }
         this.currentWord = null;
         this.currentWordElement = null;
+        this._audioUrl = null;
     }
 };

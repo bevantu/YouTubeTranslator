@@ -81,6 +81,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
+    if (message.action === 'dictLookup') {
+        handleDictLookup(message.word)
+            .then(result => sendResponse({ success: true, result }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
     if (message.action === 'testConnection') {
         const s = message.settings || {};
         // Validate required fields before attempting network call
@@ -292,6 +299,48 @@ async function fetchOllama(prompt, settings, numPredict = 800) {
         prompt,
         { ...settings, apiEndpoint: endpoint, apiKey: settings.apiKey || 'local' }
     );
+}
+
+// ─── Dictionary Lookup (Free API) ─────────────────────────────────────────────
+
+async function handleDictLookup(word) {
+    if (!word) return null;
+
+    const cleanWord = word.toLowerCase().replace(/[^a-z'-]/g, '');
+    if (!cleanWord) return null;
+
+    const cacheKey = `dict_${cleanWord}`;
+    const cached = await getCache(cacheKey);
+    if (cached) return cached;
+
+    try {
+        const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleanWord)}`);
+        if (!res.ok) return null;
+
+        const data = await res.json();
+        if (!Array.isArray(data) || !data.length) return null;
+
+        const entry = data[0];
+        const phonetic = entry.phonetic ||
+            entry.phonetics?.find(p => p.text)?.text || '';
+        const audioUrl = entry.phonetics?.find(p => p.audio)?.audio || '';
+
+        // Collect up to 3 meanings
+        const meanings = (entry.meanings || []).slice(0, 3).map(m => ({
+            pos: m.partOfSpeech || '',
+            definitions: (m.definitions || []).slice(0, 2).map(d => ({
+                def: d.definition || '',
+                example: d.example || ''
+            }))
+        }));
+
+        const result = { phonetic, audioUrl, meanings };
+        await setCache(cacheKey, result);
+        return result;
+    } catch (err) {
+        console.warn('[YT Bilingual] Dict lookup failed:', err.message);
+        return null;
+    }
 }
 
 // ─── Cache ────────────────────────────────────────────────────────────────────

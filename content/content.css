@@ -128,14 +128,15 @@
   display: none;
   position: fixed;
   z-index: 99999;
-  width: 320px;
+  width: 340px;
+  max-height: 70vh;
+  overflow-y: auto;
   background: var(--yb-bg-card);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-radius: var(--yb-radius);
   border: 1px solid var(--yb-border);
   box-shadow: var(--yb-shadow), 0 0 0 1px rgba(99, 102, 241, 0.1);
-  overflow: hidden;
   animation: yb-slideUp 0.2s ease;
   font-family: 'Inter', 'Segoe UI', 'Roboto', sans-serif;
 }
@@ -144,7 +145,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 16px;
+  padding: 12px 16px;
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(168, 85, 247, 0.1));
   border-bottom: 1px solid var(--yb-border);
 }
@@ -160,6 +161,22 @@
   font-size: 13px;
   color: var(--yb-text-secondary);
   font-style: italic;
+}
+
+.yb-popup-audio-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: all var(--yb-transition);
+  opacity: 0.7;
+}
+
+.yb-popup-audio-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  opacity: 1;
 }
 
 .yb-popup-close {
@@ -179,51 +196,119 @@
   color: var(--yb-text-primary);
 }
 
-.yb-popup-body {
-  padding: 14px 16px;
-  min-height: 60px;
+/* ── Dictionary Section ── */
+.yb-popup-dict {
+  padding: 10px 16px;
 }
 
-.yb-popup-pos {
-  display: none;
-  font-size: 12px;
-  color: var(--yb-primary);
-  background: var(--yb-primary-light);
-  padding: 2px 8px;
-  border-radius: 4px;
-  margin-bottom: 8px;
-  display: inline-block;
-  font-weight: 600;
-}
-
-.yb-popup-translation {
-  display: none;
-  font-size: 16px;
-  color: var(--yb-text-primary);
-  margin-bottom: 8px;
-  font-weight: 500;
-  line-height: 1.5;
-}
-
-.yb-popup-explanation {
-  display: none;
-  font-size: 13px;
-  color: var(--yb-text-secondary);
-  line-height: 1.5;
-}
-
-.yb-popup-loading {
+.yb-popup-dict-loading {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   color: var(--yb-text-secondary);
-  font-size: 13px;
-  padding: 10px 0;
+  font-size: 12px;
+  padding: 4px 0;
 }
 
+.yb-popup-dict-empty {
+  font-size: 12px;
+  color: var(--yb-text-secondary);
+  padding: 2px 0;
+}
+
+.yb-dict-meaning {
+  margin-bottom: 8px;
+}
+
+.yb-dict-meaning:last-child {
+  margin-bottom: 0;
+}
+
+.yb-dict-pos {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--yb-primary);
+  background: var(--yb-primary-light);
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.yb-dict-def {
+  font-size: 13px;
+  color: var(--yb-text-primary);
+  line-height: 1.5;
+  margin: 2px 0;
+  padding-left: 8px;
+  border-left: 2px solid rgba(255, 255, 255, 0.06);
+}
+
+.yb-dict-example {
+  font-size: 12px;
+  color: var(--yb-text-secondary);
+  font-style: italic;
+  padding-left: 8px;
+  margin-bottom: 4px;
+  opacity: 0.8;
+}
+
+/* ── Divider ── */
+.yb-popup-divider {
+  height: 1px;
+  background: var(--yb-border);
+  margin: 0 16px;
+}
+
+/* ── AI Section ── */
+.yb-popup-ai {
+  padding: 10px 16px;
+}
+
+.yb-popup-ai-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--yb-text-secondary);
+  margin-bottom: 6px;
+  letter-spacing: 0.04em;
+}
+
+.yb-popup-ai-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--yb-text-secondary);
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.yb-popup-ai-translation {
+  font-size: 14px;
+  color: var(--yb-text-primary);
+  font-weight: 500;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+
+.yb-popup-ai-explanation {
+  font-size: 12px;
+  color: var(--yb-text-secondary);
+  line-height: 1.5;
+}
+
+/* ── Spinners ── */
 .yb-spinner {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--yb-border);
+  border-top-color: var(--yb-primary);
+  border-radius: 50%;
+  animation: yb-spin 0.8s linear infinite;
+}
+
+.yb-spinner-sm {
+  width: 14px;
+  height: 14px;
   border: 2px solid var(--yb-border);
   border-top-color: var(--yb-primary);
   border-radius: 50%;
@@ -233,7 +318,7 @@
 .yb-popup-actions {
   display: flex;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 10px 16px;
   border-top: 1px solid var(--yb-border);
   background: rgba(0, 0, 0, 0.15);
 }
