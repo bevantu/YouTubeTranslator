@@ -409,29 +409,55 @@ const SubtitleManager = {
                         isKnown = entry.status === 'known';
                         isLearning = entry.status === 'learning';
                     } else if (settings.targetLanguage === 'en' && settings.proficiencyLevel && settings.proficiencyLevel !== 'none' && window.WordLevels) {
-                        // Clean token for comparison
-                        let checkToken = lToken.replace(/^['"[(]+|['"\]).,!?]+$/g, '');
-                        const suffixes = ["'s", "'ve", "'re", "'m", "'ll", "'d", "n't"];
-                        for (const suf of suffixes) {
-                            if (checkToken.endsWith(suf)) {
-                                checkToken = checkToken.slice(0, -suf.length);
-                                break;
+                        // Strip leading/trailing non-alpha chars (e.g. >>It → it)
+                        let checkToken = lToken.replace(/^[^a-z]+|[^a-z]+$/g, '');
+
+                        // Extract stem from contraction:
+                        //   doesn't → does (strip n't), it's → it (strip 's), i'm → i
+                        let stemForLookup = checkToken;
+                        if (stemForLookup.endsWith("n't")) {
+                            // doesn't → doesn → NOT useful; map common negatives to their root
+                            stemForLookup = stemForLookup.slice(0, -3); // doesn't → doesn
+                            // Additional exceptions: map back to root verb
+                            const negMap = {
+                                doesn: 'does', isn: 'is', aren: 'are', wasn: 'was',
+                                weren: 'were', haven: 'have', hasn: 'has', hadn: 'had',
+                                won: 'will', can: 'can', couldn: 'could', shouldn: 'should',
+                                wouldn: 'would', didn: 'did', don: 'do'
+                            };
+                            stemForLookup = negMap[stemForLookup] || stemForLookup;
+                        } else {
+                            for (const suf of ["'ve", "'re", "'ll", "'m", "'d", "'s"]) {
+                                if (stemForLookup.endsWith(suf)) {
+                                    stemForLookup = stemForLookup.slice(0, -suf.length);
+                                    break;
+                                }
                             }
                         }
 
-                        // Hardcode extremely common words that frequency lists might skip due to length filtering
-                        if (["i", "a", "an", "the", "to", "and", "of", "in", "is", "it", "you", "that"].includes(checkToken)) {
+                        // Very common short words that may be missing from frequency lists
+                        const ALWAYS_KNOWN = new Set([
+                            "i", "a", "an", "the", "to", "and", "of", "in", "is", "it",
+                            "you", "that", "he", "she", "we", "they", "me", "him", "her",
+                            "us", "them", "my", "your", "his", "our", "their", "its",
+                            "be", "do", "go", "on", "at", "by", "as", "up", "or", "if",
+                            "no", "so", "was", "are", "has", "had", "not", "but", "for",
+                            "can", "did", "got", "get", "let", "say", "see", "use",
+                            "does", "have", "from", "this", "with", "will", "been", "were"
+                        ]);
+
+                        if (!stemForLookup || ALWAYS_KNOWN.has(stemForLookup) || ALWAYS_KNOWN.has(checkToken)) {
                             isKnown = true;
                         } else {
                             const lvl = settings.proficiencyLevel;
                             const WL = window.WordLevels;
 
-                            // Check incrementally up to the user's level
-                            const inPrimary = WL.primary.includes(checkToken);
-                            const inMiddle = inPrimary || WL.middle.includes(checkToken);
-                            const inHigh = inMiddle || WL.high.includes(checkToken);
-                            const inCet4 = inHigh || WL.cet4.includes(checkToken);
-                            const inCet6 = inCet4 || WL.cet6.includes(checkToken);
+                            // Check both the stem (e.g. "does") and the full token (e.g. "doesn")
+                            const inPrimary = WL.primary.includes(stemForLookup) || WL.primary.includes(checkToken);
+                            const inMiddle = inPrimary || WL.middle.includes(stemForLookup) || WL.middle.includes(checkToken);
+                            const inHigh = inMiddle || WL.high.includes(stemForLookup) || WL.high.includes(checkToken);
+                            const inCet4 = inHigh || WL.cet4.includes(stemForLookup) || WL.cet4.includes(checkToken);
+                            const inCet6 = inCet4 || WL.cet6.includes(stemForLookup) || WL.cet6.includes(checkToken);
 
                             if (lvl === 'primary' && inPrimary) isKnown = true;
                             else if (lvl === 'middle' && inMiddle) isKnown = true;
