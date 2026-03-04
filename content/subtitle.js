@@ -329,7 +329,7 @@ const SubtitleManager = {
 
         // Step 3: Create SEGMENTS from events (for English display)
         // Each event becomes a display segment with original timing.
-        // Make timing contiguous so subtitles stay on screen until the next one starts.
+        // Make timing contiguous WITHOUT OVERLAPS so subtitles stay on screen exactly until the next one starts.
         const segments = events.map(e => ({
             startMs: e.startMs,
             endMs: e.endMs,
@@ -338,7 +338,14 @@ const SubtitleManager = {
         }));
 
         for (let s = 0; s < segments.length - 1; s++) {
-            segments[s].endMs = Math.max(segments[s].endMs, segments[s + 1].startMs);
+            // YouTube rolls windows (overlapping time). We want clear discrete segments.
+            // If they overlap, truncate the current one.
+            // If there's a small gap (<1000ms), extend the current one to cover it.
+            if (segments[s].endMs > segments[s + 1].startMs) {
+                segments[s].endMs = segments[s + 1].startMs;
+            } else if (segments[s + 1].startMs - segments[s].endMs < 1000) {
+                segments[s].endMs = segments[s + 1].startMs;
+            }
         }
 
         // Step 4: Accumulate events into SENTENCES for translation
