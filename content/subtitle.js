@@ -403,13 +403,15 @@ const SubtitleManager = {
         }
         flush();
 
-        // Step 4: Make timing CONTIGUOUS — no gaps between consecutive sentences.
-        // This ensures a subtitle stays on screen until the next one begins,
-        // matching the audio timing exactly like Language Reactor does.
+        // Step 4: Fix Overlaps
+        // YouTube's raw timings often overlap. If Sentence A stays on screen
+        // past Sentence B's start time, our display logic (which picks the first match)
+        // will show A instead of B, making B appear late.
+        // We MUST strictly truncate A's end time to B's start time.
         for (let s = 0; s < sentences.length - 1; s++) {
-            // Extend current sentence's end to the next sentence's start
-            // (eliminates flicker/gaps where no subtitle is shown)
-            sentences[s].endMs = Math.max(sentences[s].endMs, sentences[s + 1].startMs);
+            if (sentences[s].endMs > sentences[s + 1].startMs) {
+                sentences[s].endMs = sentences[s + 1].startMs;
+            }
         }
 
         console.log(`[YT Bilingual] ${sentences.length} sentences from ${events.length} events`);
@@ -422,7 +424,7 @@ const SubtitleManager = {
         try {
             const parser = new DOMParser();
             const doc = parser.parseFromString(xml, 'text/xml');
-            return Array.from(doc.querySelectorAll('text')).map(el => {
+            const sentences = Array.from(doc.querySelectorAll('text')).map(el => {
                 const start = parseFloat(el.getAttribute('start') || '0') * 1000;
                 const dur = parseFloat(el.getAttribute('dur') || '2') * 1000;
                 return {
@@ -432,24 +434,39 @@ const SubtitleManager = {
                     translation: null
                 };
             }).filter(e => e.text);
+
+            // Fix Overlaps: Strict truncation preventing current subtitle from bleeding into next
+            for (let s = 0; s < sentences.length - 1; s++) {
+                if (sentences[s].endMs > sentences[s + 1].startMs) {
+                    sentences[s].endMs = sentences[s + 1].startMs;
+                }
+            }
+            return sentences;
         } catch {
             return [];
         }
     },
 
-    // ── Timeupdate listener ───────────────────────────────────────────────────
+    // ── Time Tracking (60fps synced) ──────────────────────────────────────────
 
     attachTimeupdateListener() {
         const attach = () => {
             const video = document.querySelector('video');
             if (!video) { setTimeout(attach, 500); return; }
 
-            if (this.timeupdateHandler) {
-                video.removeEventListener('timeupdate', this.timeupdateHandler);
+            // Clean up any existing loop
+            if (this.rafId) {
+                cancelAnimationFrame(this.rafId);
             }
 
-            this.timeupdateHandler = () => this.onTimeUpdate(video.currentTime);
-            video.addEventListener('timeupdate', this.timeupdateHandler);
+            // High-fidelity tracking via requestAnimationFrame (~16ms precision)
+            // Much better than 'timeupdate' event which only fires every ~250ms
+            const loop = () => {
+                if (!this.subtitleContainer) return; // Stop if destroyed
+                this.onTimeUpdate(video.currentTime);
+                this.rafId = requestAnimationFrame(loop);
+            };
+            this.rafId = requestAnimationFrame(loop);
         };
         attach();
     },
@@ -667,9 +684,9 @@ const SubtitleManager = {
 
     destroy() {
         this.preTranslating = false; // cancel any ongoing pre-translation loop
-        const video = document.querySelector('video');
-        if (video && this.timeupdateHandler) {
-            video.removeEventListener('timeupdate', this.timeupdateHandler);
+        if (this.rafId) {
+            cancelAnimationFrame(this.rafId);
+            this.rafId = null;
         }
         if (this.subtitleContainer) this.subtitleContainer.remove();
         this.subtitleContainer = null;
