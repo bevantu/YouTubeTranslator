@@ -408,9 +408,14 @@ const SubtitleManager = {
             prevEndMs = curr.endMs;
 
             // Check for embedded sentence boundary FIRST
-            if (splitEmbedded()) { sentEnd = curr.endMs; continue; }
+            while (splitEmbedded()) {
+                // Keep splitting until no more boundaries
+            }
+
             // Then overflow comma split
-            splitComma();
+            while (accText.length > MAX_CHARS && splitComma()) {
+                // Keep splitting commas if still too long
+            }
         }
         flush();
 
