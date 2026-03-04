@@ -136,6 +136,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true });
     }
 
+    if (message.action === 'downloadLog') {
+        const { filename, content } = message;
+        // Clean filename and add prefix
+        const safeName = `YT_Bilingual_${filename.replace(/[<>:"/\\|?*]/g, '_')}.txt`;
+        const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`;
+
+        chrome.downloads.download({
+            url: dataUrl,
+            filename: safeName,
+            saveAs: true,
+            conflictAction: 'uniquify'
+        }, (downloadId) => {
+            if (chrome.runtime.lastError) {
+                sendResponse({ success: false, error: chrome.runtime.lastError.message });
+            } else {
+                sendResponse({ success: true, downloadId });
+            }
+        });
+        return true;
+    }
+
     return true;
 });
 

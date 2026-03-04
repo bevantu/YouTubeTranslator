@@ -31,6 +31,9 @@ const SubtitlePanel = {
           <span class="yb-panel-icon">📝</span> Subtitles
         </h3>
         <div class="yb-panel-controls">
+          <button class="yb-panel-btn yb-panel-download-log" title="Download Translation Log">
+            <span>💾</span>
+          </button>
           <button class="yb-panel-btn yb-panel-vocab-btn" title="Vocabulary">
             <span>📚</span>
           </button>
@@ -88,6 +91,11 @@ const SubtitlePanel = {
         // Vocab button
         this.panel.querySelector('.yb-panel-vocab-btn').addEventListener('click', () => {
             this.panel.querySelector('.yb-panel-tab[data-tab="vocabulary"]').click();
+        });
+
+        // Download Log button
+        this.panel.querySelector('.yb-panel-download-log').addEventListener('click', () => {
+            SubtitleManager.downloadLog();
         });
 
         // Vocabulary filter

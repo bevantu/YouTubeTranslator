@@ -1,0 +1,604 @@
+Video: Google Cloud Live: How to create Agent Skills for Gemini CLI
+URL: https://www.youtube.com/watch?v=y4LEGj0gG4E
+Generated at: 2026/3/4 23:18:29
+============================================================
+
+[0:27] We are looking at a 5,000 share Water.
+[ZH] 我们看看这五千股水。
+
+[0:54] Everyone, I'm Greg Boggas and welcome
+[ZH] 大家好，我是格雷格·博加斯。
+
+[0:56] back to Google Cloud Live. If you tuned
+[ZH] 回到Google Cloud直播。如果你刚刚调过来…
+
+[0:58] in last week, you saw my co-host Steph
+[ZH] 上周的时候，你们看到了我的搭档斯蒂夫。
+
+[1:00] host a great session on getting started
+[ZH] 举办一个关于入门的精彩环节。
+
+[1:02] with anti-gravity, and you can find that
+[ZH] 有了反重力技术，你就会发现
+
+[1:05] recording online if you didn't catch it
+[ZH] 如果错过了，可以在网上观看录像。
+
+[1:06] live. Uh today we've got another
+[ZH] 嗯，今天我们又有一个。
+
+[1:08] fantastic show lined up for you. We're
+[ZH] 精彩的节目等着你呢。我们
+
+[1:10] going to be talking about how to create
+[ZH] 今天我们将讨论如何创建。
+
+[1:12] and use agent skills in the Gemini CLI.
+[ZH] 并使用 Gemini CLI 中的代理技能。
+
+[1:16] Uh we're joined today by two guests,
+[ZH] 今天我们很高兴请两位嘉宾参与。
+
+[1:18] Luke Schlungan and Joe Hanley. Thank
+[ZH] 卢克·舒朗根和乔·汉利。谢谢。
+
+[1:21] you, gentlemen, for joining us.
+[ZH] 各位先生，感谢你们的参与。
+
+[1:23] >> Thank you so much for the invite. Yeah,
+[ZH] 非常感谢邀请，是的，
+
+[1:25] Joe, why don't you go ahead and
+[ZH] 乔，你先说吧。
+
+[1:26] introduce yourself first?
+[ZH] 先自我介绍一下好吗？
+
+[1:28] >> Yeah, thank you so much for having us.
+[ZH] 非常感谢你们的邀请。
+
+[1:29] Uh, I'm Joe. I'm a developer here on
+[ZH] 呃，我是乔，我是这里的开发人员。
+
+[1:32] Firebase. Um, I've worked on a bunch of
+[ZH] Firebase，嗯，我做过不少。
+
+[1:34] different Firebase projects over the
+[ZH] 我做过不少不同的 Firebase 项目。
+
+[1:36] years, but lately I've been working on
+[ZH] 多年来我一直在做这方面的工作，但最近我一直在致力于
+
+[1:37] agent skills for Firebase. And I'm
+[ZH] Firebase 的代理技能。我是
+
+[1:39] really excited to show them off a bit
+[ZH] 特别激动能展示一下
+
+[1:41] today and talk about how agent skills
+[ZH] 今天跟大家聊聊代理技能。
+
+[1:43] can help you do cool things with AI. And
+[ZH] 它可以帮助你用人工智能做很棒的事情，而且
+
+[1:47] now I'll pass back to Luke.
+[ZH] 现在把话筒交还给卢克。
+
+[1:48] >> Yeah, I'm Luke Schlungan, developer
+[ZH] 是的，我是卢克·舒朗根，是一名开发者。
+
+[1:50] advocate at Google Cloud. had the chance
+[ZH] 谷歌云的倡导者，我有机会
+
+[1:52] over the last couple of weeks to work
+[ZH] 在过去的几周里，我有机会参与工作。
+
+[1:54] more closely with the Firebase team as
+[ZH] 作为与 Firebase 团队更加紧密合作的一部分。
+
+[1:56] they were prepping agent skills for
+[ZH] 他们正在准备特工技能培训。
+
+[1:57] Firebase and getting that out the door
+[ZH] Firebase 以及尽快发布它
+
+[1:59] and now I get to hang out with Joe and
+[ZH] 现在我能和乔一起待着了。
+
+[2:01] talk to people about it. So, yeah,
+[ZH] 和大家聊聊这件事。是的，
+
+[2:03] excited to chat. Thanks for the invite,
+[ZH] 很高兴能和你聊聊，谢谢你的邀请。
+
+[2:06] Greg.
+[ZH] 格雷格。
+
+[2:06] >> Oh, it's it's uh so lovely to have you
+[ZH] 哎呀，很高兴您能来。
+
+[2:08] both here. Uh Luke, maybe you could just
+[ZH] 我们都在。卢克，你能不能说一下…
+
+[2:10] kick us off. What are agent skills?
+[ZH] 给我们开个头吧，什么是特工技能？
+
+[2:13] >> Oh, yeah, of course. So, agent skills
+[ZH] 哦，那是当然的。说说特工方面的能力吧。
+
+[2:15] are essentially forever. We've needed
+[ZH] 基本上是永久性的。我们一直需要
+
+[2:18] Oh, wait forever. As long as we've had
+[ZH] 哎，要等永远啊。只要我们拥有…
+
+[2:20] agents, which is still relatively new,
+[ZH] 特工技能，这方面还比较新。
+
+[2:23] >> months, which is basically the same as
+[ZH] 几个月，这基本上是一样的。
+
+[2:26] decades now. So, as long as we've had
+[ZH] 几十年了啊。只要我们拥有…
+
+[2:28] these agents, so maybe we define agents.
+[ZH] 这些特工，可能我们需要解释一下什么是特工。
+
+[2:30] So, we've got Gemini CLI, we've got
+[ZH] 所以，我们有 Gemini 命令行工具，还有…
+
+[2:32] anti-gravity, we've got cloud code,
+[ZH] 反重力，我们有云端代码，
+
+[2:33] we've got cursor, all of these different
+[ZH] 我们有光标，这些不同的…
+
+[2:35] tools need a way to get information. So,
+[ZH] 工具需要一种获取信息的方式，所以，
+
+[2:38] context. So, for example, if you're
+[ZH] 所以，举个例子来说，如果你是…
+
+[2:40] saying, I want to add a login screen to
+[ZH] 说，我想给它增加一个登录界面，
+
+[2:43] my website. Well, there are a million
+[ZH] 我的网站。嗯，有上百万种方法。
+
+[2:45] different ways for an agent to do that.
+[ZH] 代理商可以通过不同的方式来做到这一点。
+
+[2:47] And the question is, what direction do
+[ZH] 那么问题是，我们往哪个方向走呢？
+
+[2:50] they take? What path do they take? And
+[ZH] 他们会选择什么？他们会走哪条路？还有……
+
+[2:52] so, historically, we've been like, all
+[ZH] 所以，从历史上看，我们一直都是这样的。
+
+[2:53] right, I'm going to copy down all of the
+[ZH] 好的，我这就把所有的...抄下来。
+
+[2:55] docs for Firebase or all of the docs for
+[ZH] Firebase 的文档，或者所有 Firebase 文档。
+
+[2:58] whatever it is I'm building with today,
+[ZH] 无论我今天在做什么。
+
+[2:59] and I'm going to shove that into
+[ZH] 我这就把那个塞进去。
+
+[3:01] context, and I'm just going to put
+[ZH] 说着，我直接就…
+
+[3:02] everything in there right out of the
+[ZH] 里面所有东西，直接从…
+
+[3:03] gate. Maybe that's like a 100,000 tokens
+[ZH] 关卡吧，可能差不多十万个 token。
+
+[3:05] that you're just putting into the
+[ZH] 你只是往里头加…
+
+[3:07] context right away. Well, agent skills
+[ZH] 马上就进入主题吧。嗯，是特工技能。
+
+[3:09] is a way to essentially give your agent
+[ZH] 这是一种让你的代理人
+
+[3:11] a way to say like, I think I'm going to
+[ZH] 一种表达方式，就像，我想我大概会
+
+[3:13] need this particular thing. So agent
+[ZH] 需要这个特定的东西。所以，特工
+
+[3:15] skills for Firebase, we've got an
+[ZH] Firebase 的技能，我们有…
+
+[3:17] authentication agent skills. So it'll
+[ZH] 身份验证方面的技能。所以它会…
+
+[3:20] say, "Oh, I'm doing authentication right
+[ZH] 说，“哦，我正在处理身份验证，对吧
+
+[3:22] now and only right now. I'm going to
+[ZH] 现在，只有现在。我现在要…
+
+[3:24] pull that in and then start to use
+[ZH] 把那个信息拉过来，然后开始使用
+
+[3:26] that." So you're pulling things in bit
+[ZH] 所以你是在逐步提取信息。
+
+[3:28] by bit as you need them. That fancy term
+[ZH] 一点一点地，根据你的需要。那个华丽的术语
+
+[3:31] for that is progressive disclosure, but
+[ZH] 这就是渐进式揭示，但
+
+[3:33] I try not to say that right away because
+[ZH] 我尽量避免一开始就这么说，因为
+
+[3:35] that can feel a little bit scary to
+[ZH] 那可能会让人感觉有点害怕。
+
+[3:36] folks. But that is essentially the idea
+[ZH] 朋友们，这基本上就是这个想法。
+
+[3:38] behind agent skills is instead of a ton
+[ZH] 代理技能背后，并非一大堆东西。
+
+[3:41] of docs that you're pulling in or having
+[ZH] 或者你正在引入或拥有的一些文档。
+
+[3:43] your uh agent guess at what the right
+[ZH] 你的代理，大概会猜测什么是正确的。
+
+[3:45] answer is, you're giving it the right
+[ZH] 答案是，你正在给予它正确的。
+
+[3:47] answer right away uh with hopefully not
+[ZH] 立刻回答，希望别太啰嗦。
+
+[3:50] using that many tokens. So that's the longer short answer of what agent
+[ZH] 使用那么多token，所以这就是对agent的较长简洁答案。
+
+[3:55] skills are.
+[ZH] 技能是什么。
+
+[3:57] >> Super helpful. Thank you. And I I I want
+[ZH] 太有帮助了，谢谢。我，我，我想要
+
+[3:59] to just take a minute to say hi to the
+[ZH] 花点时间打个招呼吧。
+
+[4:00] folks uh on the chat. Um we are
+[ZH] 大家在聊天中，我们正在
+
+[4:03] streaming across a whole bunch of
+[ZH] 正从大量的
+
+[4:04] different platforms. I see here Oliver
+[ZH] 不同的平台。我看到这里有奥利弗。
+
+[4:07] on YouTube to uh tuning in from Toronto.
+[ZH] 感谢大家从多伦多收看YouTube直播。
+
+[4:10] Uh and also if you have any questions,
+[ZH] 嗯，如果你有任何问题的话，
+
+[4:12] please drop them into the chat. Um and I
+[ZH] 请大家在聊天框里留言，嗯，然后我
+
+[4:15] thought we'd start off maybe this a
+[ZH] 我们一开始可能这样开始吧。
+
+[4:16] question for you Joe. We had a question
+[ZH] 有个问题想问你，乔。我们收到一个问题。
+
+[4:18] from Winter on Deb 2 and the question
+[ZH] 从冬季在德布2，关于这个问题。
+
+[4:20] was how do agent skills differ from
+[ZH] 主要问题是，代理技能和什么不同？
+
+[4:22] other agent-based tools such as MCP
+[ZH] 其他基于代理的工具，比如MCP。
+
+[4:25] servers and what advantages do agent
+[ZH] 服务器以及代理模式有什么优势？
+
+[4:27] skills offer over MCP?
+[ZH] 技能比MCP提供什么优势？
+
+[4:30] Yeah, that's a great question and I've
+[ZH] 是的，这是一个很好的问题，我一直在
+
+[4:32] definitely heard variations of that many
+[ZH] 肯定听过很多类似的说法
+
+[4:34] times over the past few weeks. Um, so I
+[ZH] 过去几周里我经历过很多次。嗯，所以我的
+
+[4:38] like to answer it with a metaphor. So
+[ZH] 我想用一个比喻来回答这个问题，所以
+
+[4:40] MCP servers give your agents the tools
+[ZH] MCP服务器为你的代理提供工具
+
+[4:43] to do something and skills give them the
+[ZH] 做某事和技能会赋予他们
+
+[4:46] instructions on how to do something with
+[ZH] 关于如何做某事的指导
+
+[4:48] those tools. So if an MCP server is a
+[ZH] 那些工具。所以如果一个MCP服务器是……
+
+[4:51] shovel, uh, a skill is a book on the
+[ZH] 铲子，嗯，一种技能就像一本关于……的书
+
+[4:54] shelf entitled How to Dig a Hole. um one
+[ZH] 书架上有一本名为《如何挖坑》的书，嗯，一。
+
+[4:58] without the other not nearly as useful
+[ZH] 没有其他那些没那么有用
+
+[4:59] and together they can make your agents a
+[ZH] 而且它们可以帮助你的代理人成为……
+
+[5:01] lot more powerful.
+[ZH] 远比这更有力量。
+
+[5:03] >> Very cool. And I think we got some stuff
+[ZH] 真酷啊。我想我们搞到了一些东西。
+
+[5:05] planned here to walk folks through how
+[ZH] 计划在这里一步一步地教大家怎么
+
+[5:07] to use uh skills and then also how to
+[ZH] 运用技能，以及如何……
+
+[5:10] create your skills. Uh Luke, could you
+[ZH] 培养你的技能。卢克，你能……
+
+[5:12] kind of tell us a little bit about what
+[ZH] 大概能跟我们说说关于什么的吧
+
+[5:13] the plan is here?
+[ZH] 计划在这里吗？
+
+[5:14] >> Yeah, so I'm actually looking at the
+[ZH] 是的，我其实正在看……
+
+[5:16] chat and people are saying like let's
+[ZH] 大家都在讨论，有人说我们不如……
+
+[5:17] build our own agent skills. That is
+[ZH] 培养我们自己的特工技能。就是说…
+
+[5:19] exactly what our plan is for today. And
+[ZH] 并且这正是我今天计划要说的。
+
+[5:21] someone else asked, is there anything
+[ZH] 有人问，有没有什么其他的……
+
+[5:23] specific that we're learning about
+[ZH] 我们学习的是非常具体的……
+
+[5:24] today? And the answer is yes, agent
+[ZH] 今天吗？答案是肯定的，特工。
+
+[5:26] skills. So we're going to break that
+[ZH] 技能。所以我们将把这个拆解一下。
+
+[5:27] into three parts. I'm going to put Joe
+[ZH] 我把它分成三个部分。我把乔伊……
+
+[5:30] on the hot seat first. So he's going to
+[ZH] 首先他要接受盘问。所以他将……
+
+[5:32] use the agent skills for Firebase to
+[ZH] 使用 Firebase 的代理技能来
+
+[5:33] start building an application. And
+[ZH] 开始构建一个应用程序，然后……
+
+[5:36] watching AI kind of work away at
+[ZH] 看着人工智能在默默地运作
+
+[5:38] building the application isn't always
+[ZH] 构建应用程序并非总是
+
+[5:40] the most exciting. So why while he he's
+[ZH] 最令人兴奋的。所以，当他在……
+
+[5:42] going to kick it off and then while he's
+[ZH] 他要开始着手做这件事，而他……
+
+[5:44] working through that, we're going to
+[ZH] 处理这个问题的时候，我们将
+
+[5:46] come back and I'm going to build a
+[ZH] 回来后，我就要开始构建一个
+
+[5:48] favorite things agent skills. So, what
+[ZH] 最喜欢的事项，特工技能。那么，什么
+
+[5:50] that is is basically I'm going to maybe
+[ZH] 基本上就是，我可能会
+
+[5:52] pull some ideas from the chat, but also
+[ZH] 从聊天中提取一些想法，但同时
+
+[5:54] just create a document of all of my
+[ZH] 就创建一个包含我所有
+
+[5:56] favorite skills and then we're going to
+[ZH] 最喜欢的技能，然后我们就要
+
+[5:58] hook that up to Gemini CLI. So, rather
+[ZH] 把它连接到 Gemini CLI。所以，与其
+
+[6:00] than talking in metaphors all day, we're
+[ZH] 与其一整天说比喻，不如
+
+[6:02] going to just dive in to building our
+[ZH] 我们就直接开始构建我们的
+
+[6:05] own agent skills. And then after we're
+[ZH] 自己的代理技能。然后我们
+
+[6:07] done with that and we've built our own
+[ZH] 做完这些，我们就自己建好了。
+
+[6:08] agent skills, we're going to hop back to
+[ZH] 代理技能之后，我们再回过头来
+
+[6:10] Joe and see exactly what he built with
+[ZH] 乔，看看他到底构建了什么
+
+[6:12] the agent skills for Firebase. So, I'm
+[ZH] Firebase 的代理技能。所以，我是
+
+[6:14] gonna pass it over to Joe and we're
+[ZH] 现在把情况交给他，我们
+
+[6:16] gonna kick things off that way. So, Joe,
+[ZH] 就这么开始吧。所以，乔，
+
+[6:18] take it away.
+[ZH] 请开始吧。
+
+[6:20] Yeah. So, um I think we should share my
+[ZH] 是的，嗯，我觉得我们应该分享我的
+
+[6:23] screen about now, but I'll be showing
+[ZH] 现在屏幕上看不到，但我会展示的
+
+[6:25] off the um agent skills that I've been
+[ZH] 离开那些我一直在练习的特工技能
+
+[6:27] building recently. Um so, I work on
+[ZH] 最近参与了这个建筑的建设。嗯，我在上面工作。
+
+[6:29] Firebase and I've been building agent
+[ZH] Firebase，我和它一起构建了代理
+
+[6:32] skills to make agents better at working
+[ZH] 培养技能，让代理更好地工作。
+
+[6:34] with Firebase. So, over here in this um
+[ZH] 和 Firebase 一起。所以，这里是……
+
+[6:37] GitHub repository we published recently,
+[ZH] 我们最近发布了一个GitHub仓库。
+
+[6:40] we have a variety of skills for
+[ZH] 我们掌握着各种各样的技能。
+
+[6:42] different Firebase project products.
+[ZH] 不同的 Firebase 项目产品。
+
+[6:44] We've got some basics that'll apply to
+[ZH] 我们有一些基础知识，适用于……
+
+[6:46] all of our products. We've got O app
+[ZH] 我们的所有产品，还有一个应用程序。
+
+[6:49] hosting, data connect, fire store, um AI
+[ZH] 托管、数据连接、云数据库、嗯，人工智能。
+
+[6:52] logic, um and many more coming soon. Um
+[ZH] 逻辑，嗯，还有更多即将推出。嗯
+
+[6:55] but rather than just go through these
+[ZH] 但与其只是简单地浏览这些
+
+[6:57] one by one, I think the much more
+[ZH] 一个一个地，我想这更多了。
+
+[6:59] interesting thing to do is to show off
+[ZH] 一个有趣的事情就是炫耀一下。
+
+[7:01] how to use them. So over here, I've got
+[ZH] 如何使用它们。这里我准备了。
+
+[7:04] a fresh empty directory I made for this
+[ZH] 我专门为此创建了一个新的空目录。
+
+[7:07] uh live stream and I'll be using Gemini
+[ZH] 呃，直播的时候我会用 Gemini。
+
+[7:10] today. But first step is to install the
+[ZH] 今天。但第一步是安装。
+
+[7:13] skills.
+[ZH] 技能。
+
+[7:15] So, if we go back to the readme over
+[ZH] 所以，如果回到那个readme文件里，
+
+[7:18] here, we've got this nice command. Um,
+[ZH] 这里有一个很棒的命令，嗯。
+
+[7:20] this command mpx skills add
+[ZH] 这条命令是添加MPX技能。
+
+[7:23] firebase/skills will work for pretty
+[ZH] firebase/skills 应该能用得挺好的。
+
+[7:26] much any agentic platform that you're
+[ZH] 几乎任何能让你自主掌控的平台都可以。
+
+[7:29] using. So, if you're using anti-gravity,
+[ZH] 正在使用。所以，如果你在使用反重力的话。
+
+[7:33] Gemini CLI, one of the many, many others
+[ZH] Gemini CLI，这是众多工具中的一个。
+
+[7:35] that supports agent skills, this will
+[ZH] 如果它支持代理技能，那将是
+
+[7:37] work for you. And I'm going to come over
+[ZH] 能为你所用。我稍后会过去。
+
+[7:39] here and run it. And it will walk me
+[ZH] 在这里运行它，它会引导我。
+
+[7:41] through setting up the skills that I
+[ZH] 通过设置我所需要的技能来实现。
+
+[7:43] want.
+[ZH] 想要。
+
+[7:45] And today I think I want app hosting off
+[ZH] 今天我想关闭应用托管。
+
+[7:49] basics firebase basics and fire store
+[ZH] Firebase基础知识和Firestore基础。
+
+[7:53] basics should do it.
+[ZH] 基础知识就应该够了。
+
+[7:55] Um you can see it supports many many
+[ZH] 嗯，你可以看到它支持很多很多。
+
+[7:57] agents. I uh just need anti-grav or um
+[ZH] 特工。我只需要反重力装置或者……
+
+[8:00] Gemini CLI today and I'll install them
+[ZH] 今天我们来安装Gemini CLI。
+
+[8:04] globally.
+[ZH] 全球范围内。
+
+[8:06] Cool. So now the skills are available.
+[ZH] 好啊，技能现在可以使用了。
+
+[8:09] And if I go run Gemini
+[ZH] 如果我跑去用 Gemini
+
+[8:13] once this starts up, I can see over here
+[ZH] 一旦启动，我就可以看到这边了。

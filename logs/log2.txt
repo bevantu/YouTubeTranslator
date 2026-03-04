@@ -1,0 +1,292 @@
+Video: Google Cloud Live: How to create Agent Skills for Gemini CLI
+URL: https://www.youtube.com/watch?v=y4LEGj0gG4E
+Generated at: 2026/3/4 23:56:34
+============================================================
+
+[0:27] We are looking at a 5,000 share Water.
+[ZH] 我们看看五千股沃特。
+
+[0:54] Everyone, I'm Greg Boggas and welcome back to Google Cloud Live. If you tuned in last week, you saw my co-host Steph host a great session on getting started with anti-gravity, and you can find that recording online if you didn't catch it
+[ZH] 大家好，我是Greg Boggas，欢迎回来Google Cloud Live。上周Steph主持了一个关于反重力技术的入门分享，没看过的朋友可以在网上找到回放。
+
+[1:06] live. Uh today we've got another fantastic show lined up for you. We're going to be talking about how to create and use agent skills in the Gemini CLI.
+[ZH] 今天我们准备了一个超棒的节目，咱们要聊聊如何在 Gemini CLI 中创建和使用代理技能。
+
+[1:16] Uh we're joined today by two guests, Luke Schlungan and Joe Hanley. Thank you, gentlemen, for joining us. >> Thank you so much for the invite. Yeah, Joe, why don't you go ahead and introduce yourself first?
+[ZH] 今天我们很高兴请到两位嘉宾，Luke Schlungan 和 Joe Hanley。感谢两位加入我们的节目。Joe，你先简单介绍一下你自己吧。
+
+[1:28] >> Yeah, thank you so much for having us.
+[ZH] 非常感谢邀请我们。
+
+[1:29] Uh, I'm Joe. I'm a developer here on Firebase. Um, I've worked on a bunch of different Firebase projects over the years, but lately I've been working on agent skills for Firebase. And I'm really excited to show them off a bit
+[ZH] 我是 Joe，我在 Firebase 担任开发工作，多年来我参与过很多 Firebase 项目，最近一直在负责 Firebase 的代理技能，很高兴能给大家展示一下。
+
+[1:41] today and talk about how agent skills can help you do cool things with AI. And now I'll pass back to Luke. >> Yeah, I'm Luke Schlungan, developer advocate at Google Cloud. had the chance over the last couple of weeks to work more closely with the Firebase team as they were prepping agent skills for
+[ZH] 今天跟大家聊聊代理技能如何帮助你用 AI 做很酷的事情，现在我把话筒交给 Luke。我是 Luke Schlungan，Google Cloud 的开发者倡导者，过去几周我有机会和 Firebase 团队更紧密地合作，他们正在为代理技能做准备。
+
+[1:57] Firebase and getting that out the door and now I get to hang out with Joe and talk to people about it. So, yeah, excited to chat. Thanks for the invite, Greg. >> Oh, it's it's uh so lovely to have you both here. Uh Luke, maybe you could just kick us off. What are agent skills?
+[ZH] Firebase 已经发布了，现在我能和 Joe 一起跟大家聊聊，很高兴能和大家交流。Greg，谢谢你的邀请。很高兴你们今天来，Luke，那你来简单介绍一下，什么是代理技能？
+
+[2:13] >> Oh, yeah, of course. So, agent skills are essentially forever. We've needed Oh, wait forever. As long as we've had agents, which is still relatively new, >> months, which is basically the same as decades now. So, as long as we've had these agents, so maybe we define agents.
+[ZH] 是的，没问题。代理技能说白了，就是一直都有。其实我们早就需要它们了… 哎，等等，从很早以前就需要。只要有智能助手，虽然这东西还挺新的，不过已经过了几个月，这跟几十年也差不多了。所以，只要有这些智能助手，那咱们就先说说什么是智能助手吧。
+
+[2:30] So, we've got Gemini CLI, we've got anti-gravity, we've got cloud code, we've got cursor, all of these different tools need a way to get information. So, context. So, for example, if you're saying, I want to add a login screen to
+[ZH] 有了 Gemini CLI、反重力、云代码、Cursor，这些工具都需要获取信息，关键在于上下文。比如，你想给应用增加一个登录界面...
+
+[2:43] my website. Well, there are a million different ways for an agent to do that.
+[ZH] 我的网站。代理可以做到这方面的方法多到数不清。
+
+[2:47] And the question is, what direction do they take? What path do they take? And so, historically, we've been like, all right, I'm going to copy down all of the docs for Firebase or all of the docs for whatever it is I'm building with today,
+[ZH] 问题是，他们会往哪个方向发展？会选择什么路径？所以，过去我们通常的做法是，把 Firebase 的所有文档，或者我正在构建的任何东西的所有文档都复制下来。
+
+[2:59] and I'm going to shove that into context, and I'm just going to put everything in there right out of the gate. Maybe that's like a 100,000 tokens that you're just putting into the context right away. Well, agent skills is a way to essentially give your agent a way to say like, I think I'm going to
+[ZH] 然后我就把这些信息塞进上下文里，一开始就全部放进去。也许这就意味着你一下子就要放入 10 万个 token。智能助手技能，本质上就是给你的助手提供一种方式，让它说，我想...
+
+[3:13] need this particular thing. So agent skills for Firebase, we've got an authentication agent skills. So it'll say, "Oh, I'm doing authentication right now and only right now. I'm going to pull that in and then start to use
+[ZH] 我需要这个特定的东西。所以，对于 Firebase 来说，智能助手技能包括身份验证技能。它会说：“我现在正在进行身份验证，而且现在才进行。我会把这个信息提取出来，然后开始使用。”
+
+[3:26] that." So you're pulling things in bit by bit as you need them. That fancy term for that is progressive disclosure, but I try not to say that right away because that can feel a little bit scary to folks. But that is essentially the idea
+[ZH] “就是那样。所以你是在需要的时候一点一点地引入信息。那个花哨的术语叫做渐进式揭示，但我尽量避免一开始就说这个词，因为这可能会让一些人感到有点害怕。但这就是其核心思想。
+
+[3:38] behind agent skills is instead of a ton of docs that you're pulling in or having your uh agent guess at what the right answer is, you're giving it the right answer right away uh with hopefully not using that many tokens. So that's the longer short answer of what agent skills are.
+[ZH] 代理技能的用意不是为了让它从大量的文档中查找信息，或者让它猜测正确的答案，而是直接提供正确的答案，并且希望使用的 token 数量不会太多。这就是对代理技能的更详细的解释。
+
+[3:57] >> Super helpful. Thank you. And I I I want to just take a minute to say hi to the folks uh on the chat. Um we are streaming across a whole bunch of different platforms. I see here Oliver on YouTube to uh tuning in from Toronto.
+[ZH] 太有帮助了，谢谢。我想花点时间向在聊天中的朋友们打个招呼，我们正在多个平台直播，我看到YouTube上的Oliver，来自多伦多。
+
+[4:10] Uh and also if you have any questions, please drop them into the chat. Um and I thought we'd start off maybe this a question for you Joe. We had a question from Winter on Deb 2 and the question was how do agent skills differ from
+[ZH] 嗯，如果有任何问题，请在聊天中提出来。我想我们从一个问题开始吧，这个问题是乔提出的，来自 Winter 关于 Deb 2 的问题是：智能助手技能和……有什么区别？
+
+[4:22] other agent-based tools such as MCP servers and what advantages do agent skills offer over MCP? Yeah, that's a great question and I've definitely heard variations of that many times over the past few weeks. Um, so I like to answer it with a metaphor. So MCP servers give your agents the tools
+[ZH] 其他基于代理的工具，比如 MCP 服务器，那么代理技能相比 MCP 有什么优势？是的，这是一个很好的问题，过去几周我经常听到类似的问题。我喜欢用一个比喻来回答这个问题。MCP 服务器为你的代理提供了工具。
+
+[4:43] to do something and skills give them the instructions on how to do something with those tools. So if an MCP server is a shovel, uh, a skill is a book on the shelf entitled How to Dig a Hole. um one without the other not nearly as useful and together they can make your agents a lot more powerful.
+[ZH] MCP服务器就像工具，而技能则是指导他们如何使用这些工具的说明书。如果说MCP服务器是一把铲子，技能就像一本叫做《如何挖坑》的书。两者缺一不可，结合起来能让你的代理更加强大。
+
+[5:03] >> Very cool. And I think we got some stuff planned here to walk folks through how to use uh skills and then also how to create your skills. Uh Luke, could you kind of tell us a little bit about what the plan is here?
+[ZH] 真棒。我想我们有一些计划，可以教大家如何使用技能，以及如何创建自己的技能。卢克，你能大概告诉我们这里的计划是什么吗？
+
+[5:14] >> Yeah, so I'm actually looking at the chat and people are saying like let's build our own agent skills. That is exactly what our plan is for today. And someone else asked, is there anything specific that we're learning about today? And the answer is yes, agent skills. So we're going to break that
+[ZH] 是的，我正在看聊天，大家说要自己创建代理技能，这正是我今天的计划。有人问，今天我们会学习什么具体的知识？答案是肯定的，代理技能。我们将把这个内容分解成……
+
+[5:27] into three parts. I'm going to put Joe on the hot seat first. So he's going to use the agent skills for Firebase to start building an application. And watching AI kind of work away at building the application isn't always
+[ZH] 我把它分成三个部分，首先让乔来接受考验。他将使用Firebase的代理技能来开始构建应用程序，而观察AI在构建应用程序的过程中工作，并不总是……
+
+[5:40] the most exciting. So why while he he's going to kick it off and then while he's working through that, we're going to come back and I'm going to build a favorite things agent skills. So, what that is is basically I'm going to maybe
+[ZH] 最令人兴奋的部分。所以，当他开始的时候，我们会回来，我会创建一个“最喜欢的东西”代理技能。简单来说，我可能会……
+
+[5:52] pull some ideas from the chat, but also just create a document of all of my favorite skills and then we're going to hook that up to Gemini CLI. So, rather than talking in metaphors all day, we're going to just dive in to building our
+[ZH] 我看看聊天里有没有什么好点子，同时也会整理一份我最喜欢的技能清单，然后我们会把这些都链接到 Gemini CLI。所以，我们今天不打算一直用比喻来讲，而是直接开始构建我们的……
+
+[6:05] own agent skills. And then after we're done with that and we've built our own agent skills, we're going to hop back to Joe and see exactly what he built with the agent skills for Firebase. So, I'm gonna pass it over to Joe and we're gonna kick things off that way. So, Joe, take it away.
+[ZH] 然后，在我们完成并构建了自己的代理技能之后，我们会回到乔那里，看看他用Firebase的代理技能构建了什么。我把话给乔，我们这样开始吧。乔，开始吧。
+
+[6:20] Yeah. So, um I think we should share my screen about now, but I'll be showing off the um agent skills that I've been building recently. Um so, I work on Firebase and I've been building agent skills to make agents better at working
+[ZH] 是的，我想现在应该共享我的屏幕，我将展示我最近一直在构建的代理技能。我在Firebase工作，我一直在构建代理技能，以使代理更好地工作。
+
+[6:34] with Firebase. So, over here in this um GitHub repository we published recently, we have a variety of skills for different Firebase project products.
+[ZH] 所以，在最近我们发布的这个GitHub仓库里，有各种各样的技能，适用于不同的Firebase项目产品。
+
+[6:44] We've got some basics that'll apply to all of our products. We've got O app hosting, data connect, fire store, um AI logic, um and many more coming soon. Um but rather than just go through these one by one, I think the much more
+[ZH] 我们有一些适用于所有产品的基本功能，包括应用托管、数据连接、Firestore、AI逻辑，以及更多即将推出的功能。与其逐一介绍，我觉得更重要的是...
+
+[6:59] interesting thing to do is to show off how to use them. So over here, I've got a fresh empty directory I made for this uh live stream and I'll be using Gemini today. But first step is to install the skills.
+[ZH] 一个有趣的做法是展示如何使用它们。这里我新建了一个空的目录，用于这次直播，今天我将使用Gemini。第一步是安装这些技能。
+
+[7:15] So, if we go back to the readme over here, we've got this nice command. Um, this command mpx skills add firebase/skills will work for pretty much any agentic platform that you're using. So, if you're using anti-gravity, Gemini CLI, one of the many, many others that supports agent skills, this will
+[ZH] 所以，如果我们回到这里的README文件，这里有一个很棒的命令。这个命令“mpx skills add firebase/skills”几乎适用于任何代理平台。如果你在使用反重力、Gemini CLI，或者其他支持代理技能的众多工具，这个命令都能用。
+
+[7:37] work for you. And I'm going to come over here and run it. And it will walk me through setting up the skills that I want.
+[ZH] 这个命令对你来说也有效，我来这里运行一下，它会引导我设置我想要的技能。
+
+[7:45] And today I think I want app hosting off basics firebase basics and fire store basics should do it. Um you can see it supports many many agents. I uh just need anti-grav or um Gemini CLI today and I'll install them globally.
+[ZH] 今天我想先讲讲应用托管的基础知识，以及Firestore的基础知识，就差不多了。你可以看到它支持很多代理。我今天只需要反重力或者Gemini CLI，然后全局安装它们。
+
+[8:06] Cool. So now the skills are available.
+[ZH] 好，技能已经可以使用了。
+
+[8:09] And if I go run Gemini once this starts up, I can see over here in the corner four skills available. If I type slashsklls, I can see what those are. And uh this right here is actually very interesting.
+[ZH] 如果我启动Gemini，这里就能看到四个可用的技能。输入斜杠技能，就能看到它们是什么。而且这个功能很有意思。
+
+[8:26] This is the what your agent sees when you haven't dove into skills. So those four skills have a you know couple thousand tokens of um useful context in them. But right now all that is added to my uh main context is this. And that makes them nice, lightweight, and efficient to kind of have in the
+[ZH] 这是你的代理在你看过技能之前所能看到的界面。这四个技能包含了大约两千个token的有用上下文，但目前所有内容都添加到我的主上下文中就是这些。这样一来，它们就变得轻量且高效，可以用于……
+
+[8:48] background until you need them. So uh today I think I'm going to make an app that we can share with y'all. Uh, I'm thinking we make an app where folks in the chat can vote on their favorite programming language. So, I'd like to build an app where users can vote on their favorite programming
+[ZH] 背景知识，等你用到的时候再学。今天我想做一个可以和大家分享的应用。我想做一个应用，让聊天中的大家可以投票选出自己最喜欢的编程语言。我想做一个用户可以投票选出自己最喜欢的编程语言的应用。
+
+[9:14] language from a few options. use fire store and firebase off on and I made a project just for this new test Joe. >> All right. And >> so Joe, I have a few questions about that that prompt there. So you've you've told it it's in that specific project.
+[ZH] 从几个选项中选择编程语言，我使用了Firestore和Firebase，并且专门为这个新测试创建了一个项目，Joe。好的，关于那个提示，我有几个问题想问你。你告诉它，它在特定的项目里。
+
+[9:43] You said you had a project just for this. Is that project like something you spent a few hours prepping or is that like a new fresh empty repository? What is that?
+[ZH] 你说你有一个专门的项目来做这个事，这个项目是提前花了几小时准备好的，还是一个全新的、空的仓库？它是怎么回事？
+
+[9:53] >> Uh yeah. So the folder I started in is completely empty and then new test Joe is a Google cloud project. Um it is fresh uh freshly created. All I've done is attached a billing account to it.
+[ZH] 嗯，是的。我开始的文件夹是空的，然后新建的测试乔是个谷歌云项目，是刚创建的。我只做了一件事，就是把一个账单账户绑定到它上面。
+
+[10:07] >> Got it. And then on your screen it says activate skill. What does that mean?
+[ZH] 明白了。然后在你的屏幕上显示“激活技能”，这是什么意思？
+
+[10:11] >> Yes. So this is where the magic happens.
+[ZH] 是的，神奇的事情就发生在这里。
+
+[10:14] So, um, my agent saw that my prompt was referring to Firebase and it knows that it should go read the Firebase basics skill. So, um, in here, this is uh, skill activation. Um, based on this first little bit of context, it knows it
+[ZH] 所以我的代理看到我的提示提到了 Firebase，它知道应该去阅读 Firebase 基础技能。嗯，在这里，这是技能激活。基于这部分上下文，它就知道。
+
+[10:33] would like to read more. And once I activate it, it will get a few thousand more tokens of context about how to use Firebase. So, I will allow that. And it also knows it wants to use Firebase O.
+[ZH] 我想多了解一些。一旦我激活它，它就会获得关于如何使用 Firebase 的几千个更多上下文标记。所以，我允许这样做。它还知道它想使用 Firebase O。
+
+[10:46] So it's going to load the Firebase O scale, the Fire Store basic skill. And now it's going to jump into writing my app for me.
+[ZH] 它会加载 Firebase O 规模，以及 Fire Store 基础技能。现在它将开始为我编写应用程序。
+
+[10:56] >> Very cool. Uh we we did I just want to emphasize that this is live and we do see the chat. Someone in the YouTube chat asked, can we add Pascal or forran?
+[ZH] 太棒了。我想强调一下，现在是直播状态，我们也能看到聊天内容。有人在 YouTube 聊天中问，能不能加入 Pascal 或 forran？
+
+[11:06] And so is is there a way for us to suggest to the agent that we add those languages just as proof or evidence that this is happening live?
+[ZH] 那我们是不是可以告诉 AI，加上这些语言，作为直播正在进行的证明？
+
+[11:14] >> Yes, I will uh once I get through this initial bit of writing to-dos, I will um ask it to add those to our language list.
+[ZH] 是的，等我处理完这些初始的待办事项，我会让它把这些添加到我们的语言列表里。
+
+[11:24] >> Cool. Fantastic. Cool. Yes. Thank you so much everybody for putting things in the chat. Do do keep making Joe's life harder. I would I would love to do that.
+[ZH] 厉害了，太棒了，真棒。是的。非常感谢大家在聊天区留言，真是让 Joe 的生活更难了，我太喜欢这样了。
+
+[11:33] Sounds like a lot of fun. I I love, you know, Luke, you had talked about progressive disclosure earlier, and I think this is, please correct me if I'm wrong, but if if we were using an MCP server here, all of the context for that MCP server would be loaded into context already because we're using
+[ZH] 听起来挺有趣的。Luke 之前提到了渐进式展示，我觉得这很符合那个思路，如果我理解有误请指正，但如果用的是 MCP 服务器，相关信息应该早就加载进去了，因为…
+
+[11:52] skills, like we might not need all those tools from an MCP server on every single iteration, but now we're using skills.
+[ZH] 技能，就像我们可能不需要在每次迭代中使用 MCP 服务器上的所有工具，但现在我们正在使用技能。
+
+[12:00] So now, like we're just managing context much better. where the agent can focus better like our we're using less inference on each turn. Is that a a fair way to describe what's happening here and the advantage of skills versus if we
+[ZH] 现在，我们更好地管理上下文，AI 能够更好地聚焦，每次对话的推理量也减少了，这样描述是否准确，并且是技能比如果……的优势所在？
+
+[12:11] were using MCP servers for this? >> Yeah, somewhat. I always think of it as not so much an eitheror. >> Yeah. >> Um but you definitely do drive to a good point there. Um, MCP tools are great, but they can take up a lot of tokens
+[ZH] 如果我们用 MCP 服务器的话，是这样的，我总是觉得这不应该是二选一的问题。嗯，你说的很有道理，MCP 工具很好，但会占用很多 token。
+
+[12:29] because every single time your agent wants to use an MCP server, it's going to call list tools and that gives the agent a exhaustive list of all the tools and every parameter that every single tool can take. um skills kind of they
+[ZH] 因为每次你的代理想要使用 MCP 服务器，它都会调用“列出工具”功能，这会提供一份详尽的工具清单，以及每个工具可以接受的所有参数。技能的机制大概就是这样……
+
+[12:46] solve a different issue of telling the agent what to do but they can achieve that goal with tools or with um traditional command line uh offerings.
+[ZH] 解决的问题是告诉AI该做什么，但它可以借助工具或者常规的命令行指令来达成目标。
+
+[12:56] So the skills I recently wrote for Firebase um mostly focus on using the Firebase CLI because it works well and it saves a lot of tokens.
+[ZH] 我最近为 Firebase 编写的技能，主要集中在使用 Firebase CLI，因为它效果很好，而且能节省很多 token。
+
+[13:06] >> Amazing. I uh >> Go ahead. >> Go ahead, Greg. Well, I was going to say I I was using the Firebase CLI to deploy something um uh last week and it was such a a pleasant experience just that the letting Gemini CLI know, hey, you
+[ZH] 太棒了。请继续。格雷格，你先说吧。我上周用 Firebase CLI 部署东西，感觉特别顺畅，就是告诉 Gemini CLI，嘿…
+
+[13:21] have access to the Firebase CLI and it was able to use that to, you know, deploy with like a minimum amount of me going into the Firebase console to configure stuff. >> Totally. Uh Joe, I do have somebody in the chat who's suggesting you go uh absolutely wild and control Y to enter
+[ZH] 能够访问 Firebase CLI，并且能够用它来部署，几乎不需要我进入 Firebase 控制台进行配置。完全正确。乔，我看到聊天里有人建议你放开手脚，用 Y 控制进入。
+
+[13:39] into YOLO mode. I I'm going to ask that you don't so that we can see exactly when we're enabling all the skills because that is the point of today. But uh yeah, if for those who want to live dangerously, that is absolutely an
+[ZH] 进入 YOLO 模式。我希望大家不要这么做，这样我们才能清楚地看到何时启用所有技能，因为这是今天的重点。不过，如果你想冒险，那绝对可以。
+
+[13:50] option to to go and live dangerously and let Gemini uh do that. Oh. Uh, one one piece of advice that I've heard from folks is if if you're concerned about AI going off and maybe doing something or deleting folders or files, uh, I've
+[ZH] 有个选项可以大胆尝试，让 Gemini 来处理。哦，有人建议，如果你担心 AI 会做出一些不可预测的举动，比如删除文件或文件夹，…
+
+[14:07] heard a lot of people say things like, well, commit often is are there specific things or like uh, can skills play into that? Like encouraging your AI to use certain practices or best practices as it's developing?
+[ZH] 很多人都说，经常提交代码怎么样？有没有具体的事情或者技能可以做到？比如鼓励 AI 在开发过程中采用某些实践或最佳实践？
+
+[14:21] >> Uh, skills can definitely help with that. Um, I think for preventing disasters, there are other guard rails that are more effective. Um, skills will definitely help keep your agent on track, pointing towards the right way to
+[ZH] 技能绝对可以帮到你。我认为，对于防止灾难，其他安全措施可能更有效。技能肯定能帮助你的代理程序保持正轨，指引它走向正确的方向。
+
+[14:34] do things, which can avoid um, trying to do the bad things, but the best option is always going to be not letting uh, putting in guardrails that prevent the agent from doing bad things. So that's things like working in sandboxes,
+[ZH] 避免做坏事的方法有很多，但最好的方式是设置安全措施，防止 AI 做出不当行为，比如在沙箱环境中工作。
+
+[14:48] um not using YOLO mode for extended periods, um carefully reviewing all the changes and commands that are run. Um as fun as it is to run in YOLO mode, um it is always best to keep a close eye on what's going on.
+[ZH] 不建议长时间使用 YOLO 模式，仔细检查所有运行的更改和命令。虽然 YOLO 模式很有趣，但时刻关注情况总是最好的。
+
+[15:05] >> Cool. And and not that I'm stalling because I'm nervous about my part of the demo here, but it it looks like we've gone to interactive mode. Can you show folks how to how to use that and what's going on there?
+[ZH] 好的。其实我不是紧张得故意拖延，只是我们好像已经进入交互模式了。能给大家演示一下怎么用，以及具体是怎么回事吗？
+
+[15:16] >> Yeah, so I am swapping between tabs with uh the tab key. Um and I am just going to go through and uh select some options and I will name this GCL voting app.
+[ZH] 是的，我正在用 Tab 键在标签之间切换，然后我会选择一些选项，并将这个应用命名为 GCL 投票应用。
+
+[15:40] And this will wor along for a little bit and start setting up all of my um Firebase resources. >> Yeah. So that interactive mode is like a shell within a shell here. And uh the deployment might take a few minutes. So I now might be the time to to switch over unless Joe there's anything else
+[ZH] 这个过程会持续一段时间，开始设置我的 Firebase 资源。是的，交互模式就像一个嵌套的 shell 环境。部署可能需要几分钟，现在或许是切换的时候了，除非乔有其他事情。
+
+[16:02] you want to show here before we do. Uh, no. I think there'll be some uh slightly dry um developing over here on my end.
+[ZH] 不用在这里展示了，我们先做其他事情吧。嗯，应该会有一些比较枯燥的开发工作。
+
+[16:10] So, I will pass it to Luke for some much more exciting stuff about writing your own skills. >> Cool. All right. Well, I will hop into that in a second, but I do want people to continue adding uh things that will make Joe's life more difficult in the chat. So, please do continue with that.
+[ZH] 好的，我把话筒交给 Luke，他会分享一些关于编写自定义技能的更精彩的内容。太棒了，好的。我马上演示，不过请大家继续在聊天框里发一些让 Joe 头疼的事情，拜托了。
+
+[16:25] Uh, Greg, before I jump into mine, any questions you have or anything you're seeing in the chat that you want to talk about before we jump into making our own agent skills? >> Uh, you know, the uh, no, actually, why
+[ZH] 嗯，格雷格，在我开始我的演示之前，你有什么问题或者在聊天中看到什么想先讨论的吗？在我们开始创建自己的代理技能之前？嗯，你知道，呃，不，其实……
+
+[16:38] don't you go ahead into that and we'll hit hit up a couple of these questions afterwards.
+[ZH] 你先别急着那样做，我们稍后再来解答一些问题。
+
+[16:42] >> Cool. All right. Fantastic. So, I'm going to use the Gemini CLI. I do happen to be within anti-gravity today so that we can see the folder structure, but I am going to be using Gemini CLI within the anti-gravity terminal. So using the
+[ZH] 太棒了，好的。我现在要用 Gemini CLI。我今天碰巧在反重力环境中，这样我们可以看到文件结构，但我会在反重力终端中使用 Gemini CLI。所以使用……
+
+[16:53] two together is something fun that I like to do here. So I've got two skills enabled, but just so that folks don't think that I'm I'm cheating here, I will list my skills. So I'm going to do SLSkills list. And you can see that the
+[ZH] 两个一起做一些有趣的事情是我喜欢在这里做的事情。我启用了两个技能，为了让大家知道我不是作弊，我将列出我的技能。我将执行 SLSkills list 命令，你可以看到……
+
+[17:07] two skills I have are the find skills and the skill creator. So the skill creator is a skill particularly for making skills and the find skills skill is for finding skills that are available. And both of them help your agent with skills. But today we're going to make our own custom skills. So we're
+[ZH] 我拥有的两个技能是“查找技能”和“技能创建器”。“技能创建器”顾名思义，是用来创建技能的技能，“查找技能”则是用来查找可用的技能。这两个技能都能帮助你的代理程序。但今天我们要创建自定义技能，所以……
+
+[17:27] going to make a skill within uh this application, something that it does not know the answer to already. So what I think skills are really terrific at is context that doesn't already exist within the model. Something you want it
+[ZH] 我将在这个应用中创建一个技能，一个它已经不知道答案的技能。我认为技能真正擅长的是处理模型中不存在的上下文。你想要它……
+
+[17:41] to get right every time, but it doesn't already know. So we're going to say, uh, what is my favorite? And maybe we'll say what is Luke's favorite dessert here.
+[ZH] 为了每次都能答对，但它并不知道答案。所以我们来问问，嗯，我最喜欢什么？也许我们也可以问问，卢克最喜欢什么甜点。
+
+[17:51] Just so that we're very clear. What is Luke's favorite dessert? And I am going to be nervous about this whole time. The whole time I don't know if I'm spelling dessert or desert. I never know the answer. I know that one has two s's and
+[ZH] 仅仅为了确保大家完全明白。卢克最喜欢的甜点是什么？我全程都会为此感到紧张。整个过程中我不知道该怎么拼写“甜点”还是“沙漠”，我总是不知道答案。我知道其中一个有两个s。
+
+[18:04] one doesn't. So I'm hoping that I get this right. A lot of pressure here spelling live in front of folks. But let's see. Uh so so here Gemini CLI gives the same answer that you in in the chat or watching the video will probably have which is I don't know that information in my current context
+[ZH] 一个不会。我希望我能答对，现场拼写直播压力很大。让我们看看。所以，Gemini CLI给出的答案，和你通过聊天或者观看视频看到的一样，就是我目前不知道这些信息。
+
+[18:20] memory. Would you like to tell me your favorite dessert? Which is a reasonable request. Uh but essentially historically we have to find some way to get this information into our model. And you can do that with memory. You can do that with a whole bunch of different things.
+[ZH] 记忆。你想告诉我你最喜欢的甜点是什么吗？这算是个合理的请求。但本质上，从历史上看，我们必须找到一种方法将这些信息输入到我们的模型中。你可以通过记忆来实现，也可以通过很多不同的方式来实现。
+
+[18:34] But I'm going to start with doing this in a file. Greg, it looks like you might have a question for me. Do you have a >> I I I do have a question for you. Uh this one's from Victor on YouTube. Uh he said, "How is creating a scale different
+[ZH] 但是我要先从在文件中操作开始。格雷格，你看你好像有个问题想问我。你有什么问题吗？>>我确实有个问题。这是来自YouTube的维克多提问，他说：“创建比例尺和创建模型有什么区别？”
+
+[18:46] from defining a custom command?" >> Oo. So a custom a custom command is in a custom prompt or a custom that I don't >> So So yeah, and I I think the I I can take this. I I think there's often going to be um prompts that you find yourself
+[ZH] “那要怎么定义自定义命令呢？”哦。自定义命令是指在自定义提示词中或者自定义的……我不太确定。是的，我认为我可以接手这个问题，通常会有一些提示词，你会发现自己
+
+[19:03] typing over and over again in uh Gemini CLI. And and I think that uh you could basically create what's called a custom command that you can invoke with a slash. So you might also hear these referred to as slash commands and run a
+[ZH] 我在 Gemini CLI 里一遍又一遍地输入，我想你可以创建一个所谓的自定义命令，用斜杠来调用。你可能也会听到这些被称为斜杠命令，然后运行一个。
+
+[19:18] long prompt. Um and then here I think that skills are are sort of uh like spiritually similar to custom commands but have a lot more capabilities in them.
+[ZH] 嗯，然后我认为技能和自定义命令在某种程度上精神上很相似，但技能拥有更多更强大的功能。
+
+[19:28] >> Got it. Got it. Got it. So like a slash command to run a custom prompt. Yes.
+[ZH] 明白了，明白了，明白了。就像一个斜杠命令来运行自定义提示词。是的。
+
+[19:33] Okay. So yeah, I think I think you're totally right. I think they both help a little bit with providing some context.
+[ZH] 是的，我认为你完全说得对，我认为它们都能在一定程度上提供一些背景信息。
+
+[19:39] I think I would still use prompts for something I know I'm going to be doing a hundred times. So if it's like I know I'm going to be doing this all the time and I just want to run like uh maybe it's slashcommit for like a commit
+[ZH] 我认为我仍然会使用提示词来做一些我确定要重复一百遍的事情。比如我知道我要一直做这个，我只想运行，可能是一个斜杠提交，用于提交。
+
+[19:51] message or something you might want to do with git. Uh but but I think the idea is similar in that you're saving yourself time and you're getting the agent the right context that it needs in order to perform the right action. Is that kind of along the lines of what?
+[ZH] 或者是一些你想用git做的事情，但我想这个理念是相似的，都是在节省你的时间，并且为agent提供它执行正确操作所需的正确上下文。大概就是这个意思吧？
+
+[20:06] And then I saw Joe wanted to take a crack at that answer too. He like opened his mouth and then I interrupt. So I'm gonna be quiet for a minute.
+[ZH] 然后我看到乔也想尝试回答那个问题，他张了张嘴，我就打断了他。我得安静一会儿。
+
+[20:12] >> I'll avoid interrupting. But um yeah, I think you guys got really at at the core of it. Um the key piece I'd add is um slash commands or custom commands are triggered by the user. So like you said, you type slash commit or whatever other
+[ZH] 我尽量不打断。是的，我觉得你们抓住了问题的核心。我补充的一点是，斜杠命令或自定义命令是由用户触发的，就像你们说的，输入斜杠提交或者其他什么。
+
+[20:28] whatever else you name the command. Um, that's great when you know exactly when you want it to run and you want to be the one who kicks it off. Um, the really nice thing about skills is that they are triggered by agents. So, when you're
+[ZH] 无论你将命令命名为任何其他名称，这很好，当你清楚知道何时运行它，并且想由你自己来触发时。技能真正好的一点是，它们是由agent触发的。所以，当你……
+
+[20:42] doing when you're having your agent do a larger task, like say build a whole app, it might consist of four or five different um subtasks and you can have a skill to help with each subtask without having to go in and type slashcomit
+[ZH] 当你的agent执行一个较大的任务，比如构建一个完整的应用程序时，它可能包含四个或五个不同的子任务，你可以为每个子任务设置一个技能，而无需每次都输入斜杠提交。
+
+[20:57] slash off um for each step. >> That's such a good distinction. Uh and so so uh custom commands are manually invoked by the user. Skills are automatically invoked by the agent. Is that fair?
+[ZH] 斜杠关闭，每个步骤都如此操作。这是一个很好的区分。自定义命令是用户手动触发的，技能是由agent自动触发的，对吧？
+
+[21:13] >> Yes. >> Yeah. I'm only angry because it took Joe like five words to say much better than when I was struggling to get out. Yeah, that's really terrific. Cool. All right.
+[ZH] 是的。没错。我之所以生气，是因为乔仅仅用了五个字就表达得比我费劲地解释要好得多。这真是太棒了。好极了。好的。
+
+[21:24] Well, with that, uh let's go ahead and create uh a system for our agent to get this information. So, what I'm starting with is not going to be a skill, but we're going to kind of ease our way into that so that folks can get a handle for
+[ZH] 那么，有了这些，我们就开始创建一个系统，让我们的agent获取这些信息。我开始的不是一个技能，但我们会循序渐进地引导大家，以便大家能够掌握……
+
+[21:52] a Luke's favorite file. So, I'm going to say uh create a file called uh Luke's favorite MD that includes information about all of my favorite things, including that my favorite dessert is brownies.
+[ZH] 这是一个卢克的常用文件。我将创建一个名为“卢克最爱”的MD文件，其中包含我所有喜欢的东西的信息，包括我最喜欢的甜点是布朗尼。
+
+[22:20] So, it's going to work on that for a minute. So this again is not in agent skills. This is us creating the context that Gemini CLI will be able to use in a minute in order to get the right answer to the question. So I'm going to say yes allow for this session.
+[ZH] 那么，它会再处理一分钟。再次强调，这不属于agent的技能，而是我们在创建 Gemini CLI 稍后能够使用的上下文，以便获得问题的正确答案。我选择是，允许这个会话。

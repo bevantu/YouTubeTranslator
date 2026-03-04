@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         showOriginal: document.getElementById('showOriginal'),
         showTranslation: document.getElementById('showTranslation'),
         autoTranslate: document.getElementById('autoTranslate'),
+        enableLogging: document.getElementById('enableLogging'),
         showPanel: document.getElementById('showPanel'),
         totalWords: document.getElementById('totalWords'),
         learningCount: document.getElementById('learningCount'),
@@ -177,6 +178,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         els.showOriginal.checked = s.showOriginalSubtitle;
         els.showTranslation.checked = s.showTranslatedSubtitle;
         els.autoTranslate.checked = s.autoTranslate;
+        els.enableLogging.checked = s.enableLogging;
         els.showPanel.checked = s.showPanel;
     }
 
@@ -200,6 +202,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             knownWordColor: els.knownColor.value,
             unknownWordColor: els.unknownColor.value,
             autoTranslate: els.autoTranslate.checked,
+            enableLogging: els.enableLogging.checked,
             showOriginalSubtitle: els.showOriginal.checked,
             showTranslatedSubtitle: els.showTranslation.checked
         };
