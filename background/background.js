@@ -419,13 +419,22 @@ async function handleDictLookup(word, nativeLang = 'zh') {
             .catch(() => null)
     ]);
 
-    // Extract phonetics & audio from dictionaryapi.dev
-    let phonetic = '', audioUrl = '';
+    // Extract phonetics, audio, and meanings from dictionaryapi.dev
+    let phonetic = '', audioUrl = '', meanings = [];
     const dictData = dictResult.status === 'fulfilled' ? dictResult.value : null;
     if (Array.isArray(dictData) && dictData.length) {
         const entry = dictData[0];
         phonetic = entry.phonetic || entry.phonetics?.find(p => p.text)?.text || '';
         audioUrl = entry.phonetics?.find(p => p.audio)?.audio || '';
+
+        // Collect up to 3 meanings with POS, definitions, and examples
+        meanings = (entry.meanings || []).slice(0, 3).map(m => ({
+            pos: m.partOfSpeech || '',
+            definitions: (m.definitions || []).slice(0, 2).map(d => ({
+                def: d.definition || '',
+                example: d.example || ''
+            }))
+        }));
     }
 
     // Extract translation from MyMemory
@@ -435,8 +444,8 @@ async function handleDictLookup(word, nativeLang = 'zh') {
         quickTranslation = transData.responseData.translatedText;
     }
 
-    const result = { phonetic, audioUrl, quickTranslation };
-    if (phonetic || quickTranslation) {
+    const result = { phonetic, audioUrl, quickTranslation, meanings };
+    if (phonetic || quickTranslation || meanings.length) {
         await setCache(cacheKey, result);
     }
     return result;

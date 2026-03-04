@@ -172,10 +172,32 @@ const WordPopup = {
                     popup.querySelector('.yb-popup-audio-btn').style.display = 'inline-block';
                 }
 
-                // Show quick translation (Chinese/native language)
+                // Build dictionary content: Chinese translation + English details
                 const contentEl = popup.querySelector('.yb-popup-dict-content');
+                let html = '';
+
+                // Chinese/native quick translation (prominent)
                 if (dict.quickTranslation) {
-                    contentEl.innerHTML = `<div class="yb-dict-translation">${dict.quickTranslation}</div>`;
+                    html += `<div class="yb-dict-translation">${dict.quickTranslation}</div>`;
+                }
+
+                // English definitions with POS and examples
+                if (dict.meanings && dict.meanings.length) {
+                    for (const meaning of dict.meanings) {
+                        html += `<div class="yb-dict-meaning">`;
+                        html += `<span class="yb-dict-pos">${meaning.pos}</span>`;
+                        for (const def of meaning.definitions) {
+                            html += `<div class="yb-dict-def">${def.def}</div>`;
+                            if (def.example) {
+                                html += `<div class="yb-dict-example">"${def.example}"</div>`;
+                            }
+                        }
+                        html += `</div>`;
+                    }
+                }
+
+                if (html) {
+                    contentEl.innerHTML = html;
                     contentEl.style.display = 'block';
                 } else {
                     popup.querySelector('.yb-popup-dict-empty').style.display = 'block';

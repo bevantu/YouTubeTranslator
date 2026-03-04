@@ -526,8 +526,19 @@ const SubtitleManager = {
             line.style.fontSize = `${settings.fontSize}px`;
 
             const tokens = tokenizeText(original, settings.targetLanguage);
-            tokens.forEach(token => {
-                if (isWord(token)) {
+            tokens.forEach((token, idx) => {
+                // Determine if this token is punctuation (not a word)
+                const isPunctuation = !isWord(token);
+
+                // Add space BEFORE this token if:
+                // 1. Not the first token
+                // 2. Not a CJK language (CJK doesn't use spaces)
+                // 3. Current token is NOT punctuation (punctuation attaches to previous word)
+                if (idx > 0 && !['zh', 'ja', 'ko'].includes(settings.targetLanguage) && !isPunctuation) {
+                    line.appendChild(document.createTextNode(' '));
+                }
+
+                if (!isPunctuation) {
                     const span = document.createElement('span');
                     span.className = 'yb-word';
                     span.textContent = token;
@@ -550,9 +561,7 @@ const SubtitleManager = {
                         //   doesn't → does (strip n't), it's → it (strip 's), i'm → i
                         let stemForLookup = checkToken;
                         if (stemForLookup.endsWith("n't")) {
-                            // doesn't → doesn → NOT useful; map common negatives to their root
-                            stemForLookup = stemForLookup.slice(0, -3); // doesn't → doesn
-                            // Additional exceptions: map back to root verb
+                            stemForLookup = stemForLookup.slice(0, -3);
                             const negMap = {
                                 doesn: 'does', isn: 'is', aren: 'are', wasn: 'was',
                                 weren: 'were', haven: 'have', hasn: 'has', hadn: 'had',
@@ -569,7 +578,6 @@ const SubtitleManager = {
                             }
                         }
 
-                        // Very common short words that may be missing from frequency lists
                         const ALWAYS_KNOWN = new Set([
                             "i", "a", "an", "the", "to", "and", "of", "in", "is", "it",
                             "you", "that", "he", "she", "we", "they", "me", "him", "her",
@@ -586,7 +594,6 @@ const SubtitleManager = {
                             const lvl = settings.proficiencyLevel;
                             const WL = window.WordLevels;
 
-                            // Check both the stem (e.g. "does") and the full token (e.g. "doesn")
                             const inPrimary = WL.primary.includes(stemForLookup) || WL.primary.includes(checkToken);
                             const inMiddle = inPrimary || WL.middle.includes(stemForLookup) || WL.middle.includes(checkToken);
                             const inHigh = inMiddle || WL.high.includes(stemForLookup) || WL.high.includes(checkToken);
@@ -618,10 +625,8 @@ const SubtitleManager = {
                     });
 
                     line.appendChild(span);
-                    if (!['zh', 'ja', 'ko'].includes(settings.targetLanguage)) {
-                        line.appendChild(document.createTextNode(' '));
-                    }
                 } else {
+                    // Punctuation: no space before, just append the text
                     line.appendChild(document.createTextNode(token));
                 }
             });
