@@ -77,23 +77,20 @@ const SubtitleManager = {
     loadTimedText(rawText, url) {
         let entries = [];
         try {
+            // YouTube JSON3 format (most common for modern captions)
             const json = JSON.parse(rawText);
             if (json.events) {
                 entries = this.parseJSON3(json);
             }
         } catch {
-            const xmlEntries = this.parseXML(rawText);
-            if (xmlEntries.length) {
-                entries = xmlEntries.map(e => ({
-                    ...e,
-                    translation: null
-                }));
-            }
+            // Fallback: XML timedtext format
+            entries = this.parseXML(rawText);
         }
 
         if (!entries.length) return;
 
         console.log(`[YT Bilingual] Loaded ${entries.length} caption entries`);
+        // Cancel any previous pre-translation run
         this.preTranslating = false;
         this.captions = entries;
         this.lastRenderedText = '';
@@ -110,25 +107,29 @@ const SubtitleManager = {
     },
 
     /**
-     * Phase 1: Pause video, pre-translate the first WARMUP_COUNT SENTENCES,
+     * Phase 1: Pause video, pre-translate the first WARMUP_COUNT subtitles,
      * show progress overlay, then resume and continue pre-translating the rest.
-     * Sentences (not segments) are the translation units.
+     * This ensures ALL displayed subtitles are high-quality (TRR).
      */
     async warmupAndTranslate() {
-        const WARMUP_COUNT = 8;
+        const WARMUP_COUNT = 8; // ~30-60 seconds of video
         const video = document.querySelector('video');
         const wasPlaying = video && !video.paused;
 
+        // Pause video during warmup
         if (video && !video.paused) {
             video.pause();
         }
 
-        const total = Math.min(WARMUP_COUNT, this.captions.length);
-        this.showWarmupOverlay(0, total);
+        // Show warmup overlay
+        this.showWarmupOverlay(0, Math.min(WARMUP_COUNT, this.captions.length));
 
+        // Pre-translate first batch sequentially (need context chain)
         this.preTranslating = true;
         let translated = 0;
+        const total = Math.min(WARMUP_COUNT, this.captions.length);
 
+        // Use batches of 3 for concurrency during warmup too
         const BATCH_SIZE = 3;
         let i = 0;
         while (i < total && this.preTranslating) {
@@ -144,24 +145,24 @@ const SubtitleManager = {
             if (!batch.length) continue;
 
             const ctx = this.contextBuffer.slice(-3);
-            await Promise.allSettled(batch.map(async (sent) => {
+            await Promise.allSettled(batch.map(async (entry) => {
                 try {
                     const translation = await TranslatorService.translate(
-                        sent.text,
+                        entry.text,
                         this.settings.targetLanguage,
                         this.settings.nativeLanguage,
                         this.settings,
                         ctx,
                         'quality'
                     );
-                    sent.translation = translation || '';
+                    entry.translation = translation || '';
                     if (translation) {
-                        this.contextBuffer.push({ original: sent.text, translated: translation });
+                        this.contextBuffer.push({ original: entry.text, translated: translation });
                         if (this.contextBuffer.length > 8) this.contextBuffer.shift();
                     }
                 } catch (err) {
                     console.warn('[YT Bilingual] Warmup translate failed:', err.message);
-                    sent.translation = '';
+                    entry.translation = '';
                 }
                 translated++;
                 this.showWarmupOverlay(translated, total);
@@ -176,7 +177,7 @@ const SubtitleManager = {
 
         console.log(`[YT Bilingual] Warmup complete (${translated}/${total}), resuming playback`);
 
-        // Phase 2: continue pre-translating the remaining sentences
+        // Phase 2: continue pre-translating the remaining subtitles
         this.startPreTranslation(total);
     },
 
@@ -224,8 +225,9 @@ const SubtitleManager = {
     },
 
     /**
-     * Pre-translate remaining SENTENCES in the background with CONCURRENCY.
-     * @param {number} startFrom - Sentence index to start from (after warmup)
+     * Pre-translate remaining subtitles in the background with CONCURRENCY.
+     * Uses 'quality' mode (Translate-Reflect-Refine) since we have time.
+     * @param {number} startFrom - Index to start from (after warmup)
      */
     async startPreTranslation(startFrom = 0) {
         this.preTranslating = true;
@@ -239,36 +241,34 @@ const SubtitleManager = {
                 const entry = this.captions[i];
                 if (entry.translation === null) {
                     entry.translation = '__pending__';
-                    batch.push(entry);
+                    batch.push({ entry, index: i });
                 }
                 i++;
             }
             if (!batch.length) continue;
 
             const ctx = this.contextBuffer.slice(-3);
-            await Promise.allSettled(batch.map(async (sent) => {
+            await Promise.allSettled(batch.map(async ({ entry }) => {
                 try {
                     const translation = await TranslatorService.translate(
-                        sent.text,
+                        entry.text,
                         this.settings.targetLanguage,
                         this.settings.nativeLanguage,
                         this.settings,
                         ctx,
                         'quality'
                     );
-                    sent.translation = translation || '';
+                    entry.translation = translation || '';
                     if (translation) {
-                        this.contextBuffer.push({ original: sent.text, translated: translation });
+                        this.contextBuffer.push({ original: entry.text, translated: translation });
                         if (this.contextBuffer.length > 8) this.contextBuffer.shift();
-                        // If currently displaying a segment from this sentence, update translation
-                        const currentSeg = this.captions.find(c => c.text === this.lastRenderedText);
-                        if (currentSeg && this.sentences[currentSeg.sentIdx] === sent) {
-                            this.renderSubtitle(currentSeg.text, translation, false);
+                        if (this.lastRenderedText === entry.text) {
+                            this.renderSubtitle(entry.text, translation, false);
                         }
                     }
                 } catch (err) {
                     console.warn('[YT Bilingual] Pre-translate failed:', err.message);
-                    sent.translation = '';
+                    entry.translation = '';
                 }
             }));
 
@@ -281,7 +281,7 @@ const SubtitleManager = {
     /**
      * Parse YouTube JSON3 caption format.
      *
-     * Auto-gen captions use a ROLLING WINDOW — each event is a short
+     * Auto-gen captions use a ROLLING WINDOW - each event is a short
      * sliding phrase. We accumulate new words and split at sentence
      * boundaries (embedded '.' or gap > 600ms) and max 100 chars.
      */
@@ -308,8 +308,8 @@ const SubtitleManager = {
         const events = Array.from(byStart.values()).sort((a, b) => a.startMs - b.startMs);
 
         // Step 3: rolling window accumulation with sentence splitting
-        const GAP_MS = 600;
-        const MAX_CHARS = 100;
+        const GAP_MS = 600;  // pause = new sentence
+        const MAX_CHARS = 100;  // max chars per subtitle
         const sentences = [];
 
         let sentStart = events[0].startMs;
@@ -323,14 +323,23 @@ const SubtitleManager = {
             if (t) sentences.push({ startMs: sentStart, endMs: endMs || sentEnd, text: t, translation: null });
         };
 
+        // Split accText at the FIRST embedded sentence boundary or conjunction
+        // e.g. "...in tech. You need real" -> split into two entries
         const splitEmbedded = (approxMs) => {
             let m = accText.match(/^([\s\S]*?[.!?。！？])\s+([\s\S]+)$/);
+
+            // If it's getting too long, also split at major conjunctions
             if (!m && accText.length > 70) {
+                // look for ' and ', ' but ', ' so ', ' because ', etc. near the middle
                 const minIdx = Math.floor(accText.length * 0.4);
                 const match = accText.slice(minIdx).match(/\s+(and|but|so|because|where|which|that)\s+/i);
                 if (match) {
                     const idx = minIdx + match.index;
-                    m = [accText, accText.slice(0, idx).trim(), accText.slice(idx + 1).trim()];
+                    m = [
+                        accText,
+                        accText.slice(0, idx).trim(),
+                        accText.slice(idx + 1).trim() // keep the conjunction in the second part
+                    ];
                 }
             }
             if (!m) return false;
@@ -341,6 +350,7 @@ const SubtitleManager = {
             return true;
         };
 
+        // Split at comma when text is too long
         const splitComma = (approxMs) => {
             if (accText.length <= MAX_CHARS) return false;
             const minIdx = Math.floor(accText.length * 0.4);
@@ -386,18 +396,20 @@ const SubtitleManager = {
             prevText = curr.text;
             prevEndMs = curr.endMs;
 
+            // Check for embedded sentence boundary FIRST
             if (splitEmbedded(curr.startMs)) { sentEnd = curr.endMs; continue; }
+            // Then overflow comma split
             splitComma(curr.startMs);
         }
         flush();
 
-        // Step 4: Make timing CONTIGUOUS WITHOUT OVERLAPS
+        // Step 4: Make timing CONTIGUOUS — no gaps between consecutive sentences.
+        // This ensures a subtitle stays on screen until the next one begins,
+        // matching the audio timing exactly like Language Reactor does.
         for (let s = 0; s < sentences.length - 1; s++) {
-            if (sentences[s].endMs > sentences[s + 1].startMs) {
-                sentences[s].endMs = sentences[s + 1].startMs;
-            } else if (sentences[s + 1].startMs - sentences[s].endMs < 1000) {
-                sentences[s].endMs = sentences[s + 1].startMs;
-            }
+            // Extend current sentence's end to the next sentence's start
+            // (eliminates flicker/gaps where no subtitle is shown)
+            sentences[s].endMs = Math.max(sentences[s].endMs, sentences[s + 1].startMs);
         }
 
         console.log(`[YT Bilingual] ${sentences.length} sentences from ${events.length} events`);
@@ -417,7 +429,7 @@ const SubtitleManager = {
                     startMs: start,
                     endMs: start + dur,
                     text: el.textContent.trim(),
-                    sentIdx: 0
+                    translation: null
                 };
             }).filter(e => e.text);
         } catch {
@@ -446,9 +458,11 @@ const SubtitleManager = {
         if (!this.captions.length) return;
 
         const ms = currentTimeSec * 1000;
+        // Find the caption whose window contains current time
         const entry = this.captions.find(c => ms >= c.startMs && ms < c.endMs);
 
         if (!entry) {
+            // Between captions — clear display
             if (this.lastRenderedText !== '') {
                 this.lastRenderedText = '';
                 if (this.subtitleContainer) this.subtitleContainer.innerHTML = '';
@@ -456,14 +470,18 @@ const SubtitleManager = {
             return;
         }
 
-        if (entry.text === this.lastRenderedText) return;
+        if (entry.text === this.lastRenderedText) return; // already showing this
         this.lastRenderedText = entry.text;
 
+        // Determine loading state
         const needsTranslation = this.settings.autoTranslate && entry.translation === null;
+        // Show immediately with full original text
         this.renderSubtitle(entry.text, entry.translation, needsTranslation);
 
+        // Request translation only once per entry.
+        // Use '__pending__' sentinel to prevent duplicate in-flight requests.
         if (needsTranslation) {
-            entry.translation = '__pending__';
+            entry.translation = '__pending__'; // lock so timeupdate doesn't re-queue
             const recentContext = this.contextBuffer.slice(-5);
             TranslatorService.translate(
                 entry.text,
@@ -471,7 +489,7 @@ const SubtitleManager = {
                 this.settings.nativeLanguage,
                 this.settings,
                 recentContext,
-                'quality'
+                'quality' // always use quality mode — warmup ensures we rarely reach here
             ).then(translation => {
                 entry.translation = translation || '';
                 if (this.lastRenderedText === entry.text && translation) {
