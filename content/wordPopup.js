@@ -140,19 +140,20 @@ const WordPopup = {
         this.updateButtons(effectiveStatus);
 
         // Fire BOTH requests in parallel
-        this.fetchDictionary(word);
+        this.fetchDictionary(word, nativeLang);
         this.fetchAIDefinition(word, context, targetLang, nativeLang, settings, wordStatus);
     },
 
     /**
-     * Fetch dictionary definition (instant)
+     * Fetch dictionary definition + quick translation (instant)
      */
-    async fetchDictionary(word) {
+    async fetchDictionary(word, nativeLang) {
         const popup = this.popup;
         try {
             const response = await chrome.runtime.sendMessage({
                 action: 'dictLookup',
-                word: word
+                word: word,
+                nativeLang: nativeLang
             });
 
             popup.querySelector('.yb-popup-dict-loading').style.display = 'none';
@@ -171,22 +172,10 @@ const WordPopup = {
                     popup.querySelector('.yb-popup-audio-btn').style.display = 'inline-block';
                 }
 
-                // Build dictionary content
-                if (dict.meanings && dict.meanings.length) {
-                    const contentEl = popup.querySelector('.yb-popup-dict-content');
-                    let html = '';
-                    for (const meaning of dict.meanings) {
-                        html += `<div class="yb-dict-meaning">`;
-                        html += `<span class="yb-dict-pos">${meaning.pos}</span>`;
-                        for (const def of meaning.definitions) {
-                            html += `<div class="yb-dict-def">${def.def}</div>`;
-                            if (def.example) {
-                                html += `<div class="yb-dict-example">"${def.example}"</div>`;
-                            }
-                        }
-                        html += `</div>`;
-                    }
-                    contentEl.innerHTML = html;
+                // Show quick translation (Chinese/native language)
+                const contentEl = popup.querySelector('.yb-popup-dict-content');
+                if (dict.quickTranslation) {
+                    contentEl.innerHTML = `<div class="yb-dict-translation">${dict.quickTranslation}</div>`;
                     contentEl.style.display = 'block';
                 } else {
                     popup.querySelector('.yb-popup-dict-empty').style.display = 'block';

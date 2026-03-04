@@ -99,7 +99,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.action === 'dictLookup') {
-        handleDictLookup(message.word)
+        handleDictLookup(message.word, message.nativeLang || 'zh')
             .then(result => sendResponse({ success: true, result }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -335,46 +335,57 @@ async function fetchOllama(prompt, settings, numPredict = 800) {
     );
 }
 
-// ─── Dictionary Lookup (Free API) ─────────────────────────────────────────────
+// ─── Dictionary Lookup (Free APIs, parallel) ─────────────────────────────────
 
-async function handleDictLookup(word) {
+const NATIVE_LANG_MAP = {
+    zh: 'zh-CN', en: 'en', ja: 'ja', ko: 'ko', es: 'es',
+    fr: 'fr', de: 'de', ru: 'ru', pt: 'pt', it: 'it',
+    ar: 'ar', hi: 'hi', th: 'th', vi: 'vi', tr: 'tr'
+};
+
+async function handleDictLookup(word, nativeLang = 'zh') {
     if (!word) return null;
 
     const cleanWord = word.toLowerCase().replace(/[^a-z'-]/g, '');
     if (!cleanWord) return null;
 
-    const cacheKey = `dict_${cleanWord}`;
+    const cacheKey = `dict_${nativeLang}_${cleanWord}`;
     const cached = await getCache(cacheKey);
     if (cached) return cached;
 
-    try {
-        const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleanWord)}`);
-        if (!res.ok) return null;
+    // Run BOTH lookups in parallel for speed
+    const [dictResult, transResult] = await Promise.allSettled([
+        // 1. English phonetics & definitions from dictionaryapi.dev
+        fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleanWord)}`)
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null),
+        // 2. Quick translation via MyMemory (free, no key needed)
+        fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(cleanWord)}&langpair=en|${NATIVE_LANG_MAP[nativeLang] || 'zh-CN'}`)
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null)
+    ]);
 
-        const data = await res.json();
-        if (!Array.isArray(data) || !data.length) return null;
-
-        const entry = data[0];
-        const phonetic = entry.phonetic ||
-            entry.phonetics?.find(p => p.text)?.text || '';
-        const audioUrl = entry.phonetics?.find(p => p.audio)?.audio || '';
-
-        // Collect up to 3 meanings
-        const meanings = (entry.meanings || []).slice(0, 3).map(m => ({
-            pos: m.partOfSpeech || '',
-            definitions: (m.definitions || []).slice(0, 2).map(d => ({
-                def: d.definition || '',
-                example: d.example || ''
-            }))
-        }));
-
-        const result = { phonetic, audioUrl, meanings };
-        await setCache(cacheKey, result);
-        return result;
-    } catch (err) {
-        console.warn('[YT Bilingual] Dict lookup failed:', err.message);
-        return null;
+    // Extract phonetics & audio from dictionaryapi.dev
+    let phonetic = '', audioUrl = '';
+    const dictData = dictResult.status === 'fulfilled' ? dictResult.value : null;
+    if (Array.isArray(dictData) && dictData.length) {
+        const entry = dictData[0];
+        phonetic = entry.phonetic || entry.phonetics?.find(p => p.text)?.text || '';
+        audioUrl = entry.phonetics?.find(p => p.audio)?.audio || '';
     }
+
+    // Extract translation from MyMemory
+    let quickTranslation = '';
+    const transData = transResult.status === 'fulfilled' ? transResult.value : null;
+    if (transData?.responseStatus === 200 && transData?.responseData?.translatedText) {
+        quickTranslation = transData.responseData.translatedText;
+    }
+
+    const result = { phonetic, audioUrl, quickTranslation };
+    if (phonetic || quickTranslation) {
+        await setCache(cacheKey, result);
+    }
+    return result;
 }
 
 // ─── Cache ────────────────────────────────────────────────────────────────────

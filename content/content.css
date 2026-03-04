@@ -253,6 +253,13 @@
   opacity: 0.8;
 }
 
+.yb-dict-translation {
+  font-size: 16px;
+  color: var(--yb-text-primary);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
 /* ── Divider ── */
 .yb-popup-divider {
   height: 1px;
