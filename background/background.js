@@ -81,6 +81,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
+    if (message.action === 'clearCache') {
+        // Remove only translation/definition cache keys, keep settings & vocab
+        chrome.storage.local.get(null, (items) => {
+            const keysToRemove = Object.keys(items).filter(k =>
+                k.startsWith('tr_') || k.startsWith('def_') || k.startsWith('dict_')
+            );
+            if (keysToRemove.length) {
+                chrome.storage.local.remove(keysToRemove, () => {
+                    sendResponse({ success: true, count: keysToRemove.length });
+                });
+            } else {
+                sendResponse({ success: true, count: 0 });
+            }
+        });
+        return true;
+    }
+
     if (message.action === 'dictLookup') {
         handleDictLookup(message.word)
             .then(result => sendResponse({ success: true, result }))
@@ -172,8 +189,8 @@ Use the Translate-Reflect-Refine workflow:
 
 CRITICAL RULES:
 - Natural spoken ${nName}, NOT word-for-word.
-- For long sentences, insert line breaks (\\n) at natural semantic pauses.
-- Output the final result ONLY inside <FINAL></FINAL> tags.`;
+- Output the TRANSLATION ONLY inside <FINAL></FINAL> tags. No line breaks in the translation.
+- Keep the translation on a single line. Do NOT insert \\n or line breaks in the final output.`;
         userMsg = `${contextBlock}\nTranslate this subtitle:\n${text}`;
 
         if (settings.aiProvider === 'local') {
@@ -187,10 +204,14 @@ CRITICAL RULES:
         if (match) translation = match[1];
     }
 
-    // Strip accidental quotes or whitespace
+    // Strip accidental quotes, whitespace, and any newlines
     translation = (translation || '')
         .trim()
-        .replace(/^["「『]|["」』]$/g, '');
+        .replace(/\\n/g, ' ')    // literal backslash-n from LLM
+        .replace(/[\r\n]+/g, ' ') // actual newlines
+        .replace(/\s{2,}/g, ' ') // collapse multiple spaces
+        .replace(/^["「『]|["」』]$/g, '')
+        .trim();
 
     if (translation) await setCache(cacheKey, translation);
     return translation;

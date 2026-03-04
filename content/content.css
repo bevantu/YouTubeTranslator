@@ -54,7 +54,7 @@
   border: 1px solid var(--yb-border);
   animation: yb-fadeIn 0.2s ease;
   word-wrap: break-word;
-  white-space: pre-wrap;
+  white-space: normal;
 }
 
 .yb-subtitle-original {

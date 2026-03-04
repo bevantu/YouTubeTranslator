@@ -403,6 +403,15 @@ const SubtitleManager = {
         }
         flush();
 
+        // Step 4: Make timing CONTIGUOUS — no gaps between consecutive sentences.
+        // This ensures a subtitle stays on screen until the next one begins,
+        // matching the audio timing exactly like Language Reactor does.
+        for (let s = 0; s < sentences.length - 1; s++) {
+            // Extend current sentence's end to the next sentence's start
+            // (eliminates flicker/gaps where no subtitle is shown)
+            sentences[s].endMs = Math.max(sentences[s].endMs, sentences[s + 1].startMs);
+        }
+
         console.log(`[YT Bilingual] ${sentences.length} sentences from ${events.length} events`);
         return sentences;
     },

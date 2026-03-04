@@ -133,6 +133,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
+    // Clear translation cache
+    document.getElementById('clearCache').addEventListener('click', async () => {
+        if (confirm('Clear all cached translations and dictionary lookups?')) {
+            try {
+                const response = await chrome.runtime.sendMessage({ action: 'clearCache' });
+                if (response?.success) {
+                    alert(`✓ Cache cleared! Removed ${response.count} cached entries.`);
+                }
+            } catch (err) {
+                alert('Failed to clear cache: ' + err.message);
+            }
+        }
+    });
+
     /**
      * Populate form with settings
      */
