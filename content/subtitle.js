@@ -137,7 +137,12 @@ const SubtitleManager = {
             while (batch.length < BATCH_SIZE && i < total) {
                 const entry = this.captions[i];
                 if (entry.translation === null) {
-                    entry.translation = '__pending__';
+                    // Lock all siblings in the same block
+                    for (const sibling of this.captions) {
+                        if (sibling.translateContext === entry.translateContext && sibling.translation === null) {
+                            sibling.translation = '__pending__';
+                        }
+                    }
                     batch.push(entry);
                 }
                 i++;
@@ -146,26 +151,40 @@ const SubtitleManager = {
 
             const ctx = this.contextBuffer.slice(-3);
             await Promise.allSettled(batch.map(async (entry) => {
+                let resolvedCount = 0;
                 try {
                     const translation = await TranslatorService.translate(
-                        entry.text,
+                        entry.translateContext,
                         this.settings.targetLanguage,
                         this.settings.nativeLanguage,
                         this.settings,
                         ctx,
                         'quality'
                     );
-                    entry.translation = translation || '';
-                    if (translation) {
-                        this.contextBuffer.push({ original: entry.text, translated: translation });
+
+                    const finalTrans = translation || '';
+                    // Resolve all siblings in this Context block
+                    for (const sibling of this.captions) {
+                        if (sibling.translateContext === entry.translateContext) {
+                            sibling.translation = finalTrans;
+                            if (sibling.startMs <= this.captions[total - 1].endMs) resolvedCount++;
+                        }
+                    }
+
+                    if (finalTrans) {
+                        this.contextBuffer.push({ original: entry.translateContext, translated: finalTrans });
                         if (this.contextBuffer.length > 8) this.contextBuffer.shift();
                     }
                 } catch (err) {
                     console.warn('[YT Bilingual] Warmup translate failed:', err.message);
-                    entry.translation = '';
+                    for (const sibling of this.captions) {
+                        if (sibling.translateContext === entry.translateContext) {
+                            sibling.translation = '';
+                        }
+                    }
                 }
-                translated++;
-                this.showWarmupOverlay(translated, total);
+                translated += resolvedCount || 1;
+                this.showWarmupOverlay(Math.min(translated, total), total);
             }));
         }
 
@@ -240,35 +259,52 @@ const SubtitleManager = {
             while (batch.length < BATCH_SIZE && i < this.captions.length) {
                 const entry = this.captions[i];
                 if (entry.translation === null) {
-                    entry.translation = '__pending__';
-                    batch.push({ entry, index: i });
+                    // Lock all siblings in the same block
+                    for (const sibling of this.captions) {
+                        if (sibling.translateContext === entry.translateContext && sibling.translation === null) {
+                            sibling.translation = '__pending__';
+                        }
+                    }
+                    batch.push(entry);
                 }
                 i++;
             }
             if (!batch.length) continue;
 
             const ctx = this.contextBuffer.slice(-3);
-            await Promise.allSettled(batch.map(async ({ entry }) => {
+            await Promise.allSettled(batch.map(async (entry) => {
                 try {
                     const translation = await TranslatorService.translate(
-                        entry.text,
+                        entry.translateContext,
                         this.settings.targetLanguage,
                         this.settings.nativeLanguage,
                         this.settings,
                         ctx,
                         'quality'
                     );
-                    entry.translation = translation || '';
-                    if (translation) {
-                        this.contextBuffer.push({ original: entry.text, translated: translation });
+
+                    const finalTrans = translation || '';
+                    // Resolve all siblings in this Context block
+                    for (const sibling of this.captions) {
+                        if (sibling.translateContext === entry.translateContext) {
+                            sibling.translation = finalTrans;
+                        }
+                    }
+
+                    if (finalTrans) {
+                        this.contextBuffer.push({ original: entry.translateContext, translated: finalTrans });
                         if (this.contextBuffer.length > 8) this.contextBuffer.shift();
                         if (this.lastRenderedText === entry.text) {
-                            this.renderSubtitle(entry.text, translation, false);
+                            this.renderSubtitle(entry.text, finalTrans, false);
                         }
                     }
                 } catch (err) {
                     console.warn('[YT Bilingual] Pre-translate failed:', err.message);
-                    entry.translation = '';
+                    for (const sibling of this.captions) {
+                        if (sibling.translateContext === entry.translateContext) {
+                            sibling.translation = '';
+                        }
+                    }
                 }
             }));
 
@@ -286,20 +322,27 @@ const SubtitleManager = {
      * boundaries (embedded '.' or gap > 600ms) and max 100 chars.
      */
     parseJSON3(json) {
-        // Step 1: collect events with text
+        // Step 1: collect events with exact YouTube timestamps
         const raw = [];
         for (const ev of json.events) {
             if (!ev.segs || !ev.dDurationMs) continue;
+            // Native YouTube concat all segs together for exactly what is on screen
             const text = ev.segs
                 .map(s => (s.utf8 || '').replace(/\n/g, ' '))
                 .join('').trim();
             if (!text) continue;
-            raw.push({ startMs: ev.tStartMs, endMs: ev.tStartMs + ev.dDurationMs, text });
+            raw.push({
+                startMs: ev.tStartMs,
+                endMs: ev.tStartMs + ev.dDurationMs,
+                text,
+                translation: null,
+                translateContext: ''
+            });
         }
         if (!raw.length) return [];
         raw.sort((a, b) => a.startMs - b.startMs);
 
-        // Step 2: dedup by startMs
+        // Step 2: dedup by startMs (keep the longest text if multiple payloads arrive for exact same ms)
         const byStart = new Map();
         for (const e of raw) {
             const ex = byStart.get(e.startMs);
@@ -307,131 +350,81 @@ const SubtitleManager = {
         }
         const events = Array.from(byStart.values()).sort((a, b) => a.startMs - b.startMs);
 
-        // Step 3: rolling window accumulation with sentence splitting
-        const GAP_MS = 600;  // pause = new sentence
-        const MAX_CHARS = 100;  // max chars per subtitle
-        const sentences = [];
-
-        let sentStart = events[0].startMs;
-        let sentEnd = events[0].endMs;
-        let accText = events[0].text;
-        let prevText = events[0].text;
-        let prevEndMs = events[0].endMs;
-
-        const flush = (endMs) => {
-            const t = accText.trim();
-            if (t) sentences.push({ startMs: sentStart, endMs: endMs || sentEnd, text: t, translation: null });
-        };
-
-        // Split accText at the FIRST embedded sentence boundary or conjunction
-        // e.g. "...in tech. You need real" -> split into two entries
-        const splitEmbedded = () => {
-            let m = accText.match(/^([\s\S]*?[.!?。！？])\s+([\s\S]+)$/);
-
-            // If it's getting too long, also split at major conjunctions
-            if (!m && accText.length > 70) {
-                // look for ' and ', ' but ', ' so ', ' because ', etc. near the middle
-                const minIdx = Math.floor(accText.length * 0.4);
-                const match = accText.slice(minIdx).match(/\s+(and|but|so|because|where|which|that)\s+/i);
-                if (match) {
-                    const idx = minIdx + match.index;
-                    m = [
-                        accText,
-                        accText.slice(0, idx).trim(),
-                        accText.slice(idx + 1).trim() // keep the conjunction in the second part
-                    ];
-                }
+        // Step 3: Strict overlap truncation (no math estimation, exact display boundaries)
+        // YouTube events almost ALWAYS overlap. We strictly truncate ends to prevent early hides.
+        for (let i = 0; i < events.length - 1; i++) {
+            if (events[i].endMs > events[i + 1].startMs) {
+                events[i].endMs = events[i + 1].startMs;
             }
-            if (!m) return false;
+        }
 
-            const part1 = m[1].trim();
-            const part2 = m[2].trim();
+        // At this point, `events` contains EXACTLY what YouTube shows, with ZERO gaps/overlaps.
+        // Step 4: Group into sentences for context-aware translations.
+        // Translating "And we" alone is bad. We must group consecutive chunks into a full sentence block
+        // and assign that full sequence to `translateContext` for EACH event in the block.
+        let currentBlock = [];
+        const blocks = [];
 
-            // INTERPOLATE TIME: assign time proportional to string length
-            // This solves the bug where combined/split sentences flash too early or too late
-            const ratio = part1.length / (part1.length + part2.length);
-            const splitTime = sentStart + Math.floor((sentEnd - sentStart) * ratio);
-
-            sentences.push({ startMs: sentStart, endMs: splitTime, text: part1, translation: null });
-            sentStart = splitTime;
-            accText = part2;
-            return true;
-        };
-
-        // Split at comma when text is too long
-        const splitComma = () => {
-            if (accText.length <= MAX_CHARS) return false;
-            const minIdx = Math.floor(accText.length * 0.4);
-            const idx = accText.indexOf(', ', minIdx);
-            if (idx === -1) return false;
-            const before = accText.slice(0, idx + 1).trim();
-            const after = accText.slice(idx + 2).trim();
-            if (!after) return false;
-
-            const ratio = before.length / (before.length + after.length);
-            const splitTime = sentStart + Math.floor((sentEnd - sentStart) * ratio);
-
-            sentences.push({ startMs: sentStart, endMs: splitTime, text: before, translation: null });
-            sentStart = splitTime;
-            accText = after;
-            return true;
-        };
-
-        for (let i = 1; i < events.length; i++) {
+        for (let i = 0; i < events.length; i++) {
             const curr = events[i];
-            const gap = curr.startMs - prevEndMs;
 
-            if (gap > GAP_MS) {
-                flush(prevEndMs);
-                sentStart = curr.startMs;
-                sentEnd = curr.endMs;
-                accText = curr.text;
-                prevText = curr.text;
-                prevEndMs = curr.endMs;
-                continue;
-            }
+            // Check if we should start a new translation block
+            let newBlock = false;
+            if (currentBlock.length > 0) {
+                const prev = currentBlock[currentBlock.length - 1];
+                const gap = curr.startMs - prev.endMs;
+                const prevTextTrimmed = prev.text.trim();
+                // Check if previous chunk ended with punctuation: . ? !
+                const endedSentence = prevTextTrimmed.match(/[.!?。！？]$/) && !prevTextTrimmed.match(/\b(Mr|Mrs|Ms|Dr|Vs)\.$/i);
 
-            // Find rolling window overlap
-            const prevWords = prevText.split(/\s+/).filter(Boolean);
-            const currWords = curr.text.split(/\s+/).filter(Boolean);
-            let overlap = 0;
-            for (let len = Math.min(prevWords.length, currWords.length); len > 0; len--) {
-                if (prevWords.slice(-len).join(' ').toLowerCase() ===
-                    currWords.slice(0, len).join(' ').toLowerCase()) {
-                    overlap = len; break;
+                // Rolling window reset?
+                const prevWords = prevTextTrimmed.split(/\s+/).filter(Boolean);
+                const currWords = curr.text.trim().split(/\s+/).filter(Boolean);
+                let overlap = false;
+                for (let len = Math.min(prevWords.length, currWords.length); len > 0; len--) {
+                    if (prevWords.slice(-len).join(' ').toLowerCase() === currWords.slice(0, len).join(' ').toLowerCase()) {
+                        overlap = true; break;
+                    }
+                }
+
+                if (gap > 600 || endedSentence || !overlap) {
+                    newBlock = true;
                 }
             }
-            const newWords = overlap > 0 ? currWords.slice(overlap) : currWords;
-            if (newWords.length > 0) accText += ' ' + newWords.join(' ');
-            sentEnd = Math.max(sentEnd, curr.endMs);
-            prevText = curr.text;
-            prevEndMs = curr.endMs;
 
-            // Check for embedded sentence boundary FIRST
-            while (splitEmbedded()) {
-                // Keep splitting until no more boundaries
+            if (newBlock) {
+                blocks.push(currentBlock);
+                currentBlock = [];
+            }
+            currentBlock.push(curr);
+        }
+        if (currentBlock.length > 0) blocks.push(currentBlock);
+
+        // Build rolling full sentence context for each translation block
+        for (const block of blocks) {
+            let blockText = block[0].text;
+            for (let i = 1; i < block.length; i++) {
+                const prevWords = blockText.split(/\s+/).filter(Boolean);
+                const currWords = block[i].text.split(/\s+/).filter(Boolean);
+
+                let overlapLen = 0;
+                for (let len = Math.min(prevWords.length, currWords.length); len > 0; len--) {
+                    if (prevWords.slice(-len).join(' ').toLowerCase() === currWords.slice(0, len).join(' ').toLowerCase()) {
+                        overlapLen = len; break;
+                    }
+                }
+                const newWords = overlapLen > 0 ? currWords.slice(overlapLen) : currWords;
+                if (newWords.length > 0) blockText += ' ' + newWords.join(' ');
             }
 
-            // Then overflow comma split
-            while (accText.length > MAX_CHARS && splitComma()) {
-                // Keep splitting commas if still too long
+            // Assign this fully built block string as the translation context for every event in the block
+            for (const ev of block) {
+                ev.translateContext = blockText;
             }
         }
-        flush();
 
-        // Step 4: Fix Overlaps
-        // YouTube's raw timings often overlap. If Sentence A stays on screen
-        // past Sentence B's start time, our display logic (which picks the first match)
-        // will show A instead of B, making B appear late.
-        // We MUST strictly truncate A's end time to B's start time.
-        for (let s = 0; s < sentences.length - 1; s++) {
-            if (sentences[s].endMs > sentences[s + 1].startMs) {
-                sentences[s].endMs = sentences[s + 1].startMs;
-            }
-        }
-
-        console.log(`[YT Bilingual] ${sentences.length} sentences from ${events.length} events`);
-        return sentences;
+        console.log(`[YT Bilingual] exact sync: ${events.length} display entries inside ${blocks.length} context blocks.`);
+        return events;
     },
 
 
@@ -443,11 +436,13 @@ const SubtitleManager = {
             const sentences = Array.from(doc.querySelectorAll('text')).map(el => {
                 const start = parseFloat(el.getAttribute('start') || '0') * 1000;
                 const dur = parseFloat(el.getAttribute('dur') || '2') * 1000;
+                const text = el.textContent.trim();
                 return {
                     startMs: start,
                     endMs: start + dur,
-                    text: el.textContent.trim(),
-                    translation: null
+                    text: text,
+                    translation: null,
+                    translateContext: text
                 };
             }).filter(e => e.text);
 
@@ -514,21 +509,35 @@ const SubtitleManager = {
         // Request translation only once per entry.
         // Use '__pending__' sentinel to prevent duplicate in-flight requests.
         if (needsTranslation) {
-            entry.translation = '__pending__'; // lock so timeupdate doesn't re-queue
+            // Lock ALL siblings so they don't trigger duplicate parallel requests
+            for (const sibling of this.captions) {
+                if (sibling.translateContext === entry.translateContext && sibling.translation === null) {
+                    sibling.translation = '__pending__';
+                }
+            }
+
             const recentContext = this.contextBuffer.slice(-5);
             TranslatorService.translate(
-                entry.text,
+                entry.translateContext, // Translate the full sentence context!
                 this.settings.targetLanguage,
                 this.settings.nativeLanguage,
                 this.settings,
                 recentContext,
-                'quality' // always use quality mode — warmup ensures we rarely reach here
+                'quality' // always use quality mode
             ).then(translation => {
-                entry.translation = translation || '';
-                if (this.lastRenderedText === entry.text && translation) {
-                    this.contextBuffer.push({ original: entry.text, translated: translation });
+                const finalTrans = translation || '';
+
+                // Assign translation to all siblings in this context block
+                for (const sibling of this.captions) {
+                    if (sibling.translateContext === entry.translateContext) {
+                        sibling.translation = finalTrans;
+                    }
+                }
+
+                if (this.lastRenderedText === entry.text && finalTrans) {
+                    this.contextBuffer.push({ original: entry.translateContext, translated: finalTrans });
                     if (this.contextBuffer.length > 8) this.contextBuffer.shift();
-                    this.renderSubtitle(entry.text, translation, false);
+                    this.renderSubtitle(entry.text, finalTrans, false);
                 }
             }).catch(err => {
                 console.error('[YT Bilingual] Translation error:', err);
