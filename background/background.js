@@ -141,6 +141,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ─── Translation ──────────────────────────────────────────────────────────────
 
+/**
+ * Extract the final translation from LLM output that may contain
+ * the full Translate-Reflect-Refine thought process.
+ * Uses multiple fallback strategies.
+ */
+function extractFinalTranslation(raw, nativeLang) {
+    if (!raw) return '';
+
+    // Strategy 1: <FINAL>...</FINAL> tags (ideal case)
+    const finalMatch = raw.match(/<FINAL>([\s\S]*?)<\/FINAL>/i);
+    if (finalMatch) return finalMatch[1].trim();
+
+    // Strategy 2: Look for "Refined Translation:" or "Final Translation:" label
+    // and take everything after it (the last such label wins)
+    const labelMatch = raw.match(/(?:refined|final|polished)\s*translation[:\s]*\*{0,2}\s*(.+?)(?:\n|$)/gi);
+    if (labelMatch) {
+        // Take the last match (the final refined one)
+        const last = labelMatch[labelMatch.length - 1];
+        const extracted = last.replace(/(?:refined|final|polished)\s*translation[:\s]*\*{0,2}\s*/i, '').trim();
+        if (extracted) return extracted;
+    }
+
+    // Strategy 3: For CJK languages, extract the last segment that contains
+    // mostly CJK characters (the final translation is usually at the end)
+    if (['zh', 'ja', 'ko'].includes(nativeLang)) {
+        // Split by common delimiters and find CJK-heavy segments
+        const segments = raw.split(/(?:\n|(?:\*\*\d+\.)|\d+\.\s)/);
+        const cjkSegments = segments
+            .map(s => s.replace(/\*+/g, '').trim())
+            .filter(s => {
+                if (!s || s.length < 2) return false;
+                const cjkChars = (s.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
+                return cjkChars / s.length > 0.4; // at least 40% CJK
+            });
+        if (cjkSegments.length > 0) {
+            // Return the last CJK-heavy segment (most likely the refined translation)
+            return cjkSegments[cjkSegments.length - 1]
+                .replace(/^["""「」『』：:]\s*/, '')
+                .replace(/["""「」『』]\s*$/, '')
+                .trim();
+        }
+    }
+
+    // Strategy 4: If all else fails, return raw but truncated
+    // (strip obvious preamble like "Of course..." or "Sure...")
+    let cleaned = raw
+        .replace(/^(?:of course|sure|certainly|i will|let me|here)[^.!]*[.!]\s*/i, '')
+        .replace(/\*\*[^*]+\*\*/g, '') // remove **bold** markers
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+
+    return cleaned;
+}
+
 async function handleTranslate(text, targetLang, nativeLang, settings, context = [], skipCache = false, mode = 'quality') {
     if (!text || !text.trim()) return '';
 
@@ -199,9 +253,9 @@ CRITICAL RULES:
             translation = await fetchOpenAI(system, userMsg, settings, 1000);
         }
 
-        // Extract from <FINAL> tags
-        const match = (translation || '').match(/<FINAL>([\s\S]*?)<\/FINAL>/i);
-        if (match) translation = match[1];
+        // Robust extraction: LLM sometimes dumps its entire thought process.
+        // Try multiple strategies to extract ONLY the final translation.
+        translation = extractFinalTranslation(translation || '', nativeLang);
     }
 
     // Strip accidental quotes, whitespace, and any newlines
