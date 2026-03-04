@@ -325,7 +325,7 @@ const SubtitleManager = {
 
         // Split accText at the FIRST embedded sentence boundary or conjunction
         // e.g. "...in tech. You need real" -> split into two entries
-        const splitEmbedded = (approxMs) => {
+        const splitEmbedded = () => {
             let m = accText.match(/^([\s\S]*?[.!?。！？])\s+([\s\S]+)$/);
 
             // If it's getting too long, also split at major conjunctions
@@ -343,15 +343,23 @@ const SubtitleManager = {
                 }
             }
             if (!m) return false;
-            sentences.push({ startMs: sentStart, endMs: approxMs, text: m[1].trim(), translation: null });
-            sentStart = approxMs;
-            sentEnd = approxMs;
-            accText = m[2].trim();
+
+            const part1 = m[1].trim();
+            const part2 = m[2].trim();
+
+            // INTERPOLATE TIME: assign time proportional to string length
+            // This solves the bug where combined/split sentences flash too early or too late
+            const ratio = part1.length / (part1.length + part2.length);
+            const splitTime = sentStart + Math.floor((sentEnd - sentStart) * ratio);
+
+            sentences.push({ startMs: sentStart, endMs: splitTime, text: part1, translation: null });
+            sentStart = splitTime;
+            accText = part2;
             return true;
         };
 
         // Split at comma when text is too long
-        const splitComma = (approxMs) => {
+        const splitComma = () => {
             if (accText.length <= MAX_CHARS) return false;
             const minIdx = Math.floor(accText.length * 0.4);
             const idx = accText.indexOf(', ', minIdx);
@@ -359,9 +367,12 @@ const SubtitleManager = {
             const before = accText.slice(0, idx + 1).trim();
             const after = accText.slice(idx + 2).trim();
             if (!after) return false;
-            sentences.push({ startMs: sentStart, endMs: approxMs, text: before, translation: null });
-            sentStart = approxMs;
-            sentEnd = approxMs;
+
+            const ratio = before.length / (before.length + after.length);
+            const splitTime = sentStart + Math.floor((sentEnd - sentStart) * ratio);
+
+            sentences.push({ startMs: sentStart, endMs: splitTime, text: before, translation: null });
+            sentStart = splitTime;
             accText = after;
             return true;
         };
@@ -397,9 +408,9 @@ const SubtitleManager = {
             prevEndMs = curr.endMs;
 
             // Check for embedded sentence boundary FIRST
-            if (splitEmbedded(curr.startMs)) { sentEnd = curr.endMs; continue; }
+            if (splitEmbedded()) { sentEnd = curr.endMs; continue; }
             // Then overflow comma split
-            splitComma(curr.startMs);
+            splitComma();
         }
         flush();
 
