@@ -113,24 +113,20 @@ const SubtitleManager = {
      * This ensures ALL displayed subtitles are high-quality (TRR).
      */
     async warmupAndTranslate() {
-        const WARMUP_COUNT = 8; // ~30-60 seconds of video
+        const WARMUP_COUNT = 8;
         const video = document.querySelector('video');
         const wasPlaying = video && !video.paused;
 
-        // Pause video during warmup
         if (video && !video.paused) {
             video.pause();
         }
 
-        // Show warmup overlay
         this.showWarmupOverlay(0, Math.min(WARMUP_COUNT, this.captions.length));
 
-        // Pre-translate first batch sequentially (need context chain)
         this.preTranslating = true;
         let translated = 0;
         const total = Math.min(WARMUP_COUNT, this.captions.length);
 
-        // Use batches of 3 for concurrency during warmup too
         const BATCH_SIZE = 3;
         let i = 0;
         while (i < total && this.preTranslating) {
@@ -138,7 +134,6 @@ const SubtitleManager = {
             while (batch.length < BATCH_SIZE && i < total) {
                 const entry = this.captions[i];
                 if (entry.translation === null) {
-                    // Lock all siblings in the same block
                     for (const sibling of this.captions) {
                         if (sibling.translateContext === entry.translateContext && sibling.translation === null) {
                             sibling.translation = '__pending__';
@@ -154,47 +149,31 @@ const SubtitleManager = {
             await Promise.allSettled(batch.map(async (entry) => {
                 let resolvedCount = 0;
                 try {
-                    const translation = await TranslatorService.translate(
-                        entry.translateContext,
-                        this.settings.targetLanguage,
-                        this.settings.nativeLanguage,
-                        this.settings,
-                        ctx,
-                        'quality'
-                    );
-
-                    const finalTrans = translation || '';
-                    // Split translation proportionally among siblings
-                    this.assignBlockTranslation(entry.translateContext, finalTrans);
+                    await this._translateBlock(entry.translateContext, ctx);
                     for (const sibling of this.captions) {
                         if (sibling.translateContext === entry.translateContext && sibling.startMs <= this.captions[total - 1].endMs) {
                             resolvedCount++;
                         }
                     }
-
-                    if (finalTrans) {
-                        this.addToLog(entry.translateContext, finalTrans, entry.startMs);
-                        this.contextBuffer.push({ original: entry.translateContext, translated: finalTrans });
-                        if (this.contextBuffer.length > 8) this.contextBuffer.shift();
-                    }
                 } catch (err) {
                     console.warn('[YT Bilingual] Warmup translate failed:', err.message);
-                    this.assignBlockTranslation(entry.translateContext, '');
+                    for (const s of this.captions) {
+                        if (s.translateContext === entry.translateContext && s.translation === '__pending__') {
+                            s.translation = '';
+                        }
+                    }
                 }
                 translated += resolvedCount || 1;
                 this.showWarmupOverlay(Math.min(translated, total), total);
             }));
         }
 
-        // Remove overlay and resume video
         this.hideWarmupOverlay();
         if (wasPlaying && video) {
             video.play();
         }
 
         console.log(`[YT Bilingual] Warmup complete (${translated}/${total}), resuming playback`);
-
-        // Phase 2: continue pre-translating the remaining subtitles
         this.startPreTranslation(total);
     },
 
@@ -272,32 +251,20 @@ const SubtitleManager = {
             const ctx = this.contextBuffer.slice(-3);
             await Promise.allSettled(batch.map(async (entry) => {
                 try {
-                    const translation = await TranslatorService.translate(
-                        entry.translateContext,
-                        this.settings.targetLanguage,
-                        this.settings.nativeLanguage,
-                        this.settings,
-                        ctx,
-                        'quality'
-                    );
+                    await this._translateBlock(entry.translateContext, ctx);
 
-                    const finalTrans = translation || '';
-                    // Split translation proportionally among siblings
-                    this.assignBlockTranslation(entry.translateContext, finalTrans);
-
-                    if (finalTrans) {
-                        this.addToLog(entry.translateContext, finalTrans, entry.startMs);
-                        this.contextBuffer.push({ original: entry.translateContext, translated: finalTrans });
-                        if (this.contextBuffer.length > 8) this.contextBuffer.shift();
-                        // Re-render current if it was updated
-                        const current = this.captions.find(c => c.text === this.lastRenderedText && c.translateContext === entry.translateContext);
-                        if (current && current.translation && current.translation !== '__pending__') {
-                            this.renderSubtitle(current.text, current.translation, false);
-                        }
+                    // Re-render current if it was updated
+                    const current = this.captions.find(c => c.text === this.lastRenderedText && c.translateContext === entry.translateContext);
+                    if (current && current.translation && current.translation !== '__pending__') {
+                        this.renderSubtitle(current.text, current.translation, false);
                     }
                 } catch (err) {
                     console.warn('[YT Bilingual] Pre-translate failed:', err.message);
-                    this.assignBlockTranslation(entry.translateContext, '');
+                    for (const s of this.captions) {
+                        if (s.translateContext === entry.translateContext && s.translation === '__pending__') {
+                            s.translation = '';
+                        }
+                    }
                 }
             }));
 
@@ -603,32 +570,19 @@ const SubtitleManager = {
             }
 
             const recentContext = this.contextBuffer.slice(-5);
-            TranslatorService.translate(
-                entry.translateContext, // Translate the full sentence context!
-                this.settings.targetLanguage,
-                this.settings.nativeLanguage,
-                this.settings,
-                recentContext,
-                'quality' // always use quality mode
-            ).then(translation => {
-                const finalTrans = translation || '';
-
-                // Split translation proportionally among siblings
-                this.assignBlockTranslation(entry.translateContext, finalTrans);
-
-                if (finalTrans) {
-                    this.addToLog(entry.translateContext, finalTrans, entry.startMs);
-                    this.contextBuffer.push({ original: entry.translateContext, translated: finalTrans });
-                    if (this.contextBuffer.length > 8) this.contextBuffer.shift();
-                    // Re-render current segment with its split translation
-                    const current = this.captions.find(c => c.text === this.lastRenderedText && c.translateContext === entry.translateContext);
-                    if (current && current.translation && current.translation !== '__pending__') {
-                        this.renderSubtitle(current.text, current.translation, false);
-                    }
+            this._translateBlock(entry.translateContext, recentContext).then(() => {
+                // Re-render current segment with its translation
+                const current = this.captions.find(c => c.text === this.lastRenderedText && c.translateContext === entry.translateContext);
+                if (current && current.translation && current.translation !== '__pending__') {
+                    this.renderSubtitle(current.text, current.translation, false);
                 }
             }).catch(err => {
                 console.error('[YT Bilingual] Translation error:', err);
-                entry.translation = '';
+                for (const s of this.captions) {
+                    if (s.translateContext === entry.translateContext && s.translation === '__pending__') {
+                        s.translation = '';
+                    }
+                }
             });
         }
     },
@@ -809,13 +763,62 @@ const SubtitleManager = {
         this.hideNativeCaptions(false);
     },
 
-    // ── Translation Splitting ─────────────────────────────────────────────────
+    // ── Block Translation (AI-aligned) ─────────────────────────────────────────
+
+    /**
+     * Translate all siblings of a context block using numbered segment approach.
+     * AI sees each segment as a numbered line and returns per-segment translations.
+     * This guarantees perfect Chinese-English alignment.
+     */
+    async _translateBlock(translateContext, context) {
+        const siblings = this.captions.filter(c => c.translateContext === translateContext);
+        if (!siblings.length) return;
+
+        // Build numbered segments for the AI
+        const segments = siblings.map((s, idx) => ({
+            id: idx + 1,
+            text: s.text
+        }));
+
+        const result = await TranslatorService.translateBlock(
+            segments,
+            this.settings.targetLanguage,
+            this.settings.nativeLanguage,
+            this.settings,
+            context
+        );
+
+        // Assign translations by ID
+        let anyTranslated = false;
+        for (let idx = 0; idx < siblings.length; idx++) {
+            const id = idx + 1;
+            const trans = result[id] || '';
+            siblings[idx].translation = trans;
+            if (trans) anyTranslated = true;
+        }
+
+        // Update context buffer and log
+        if (anyTranslated) {
+            const fullOriginal = siblings.map(s => s.text).join(' ');
+            const fullTranslated = siblings.map(s => s.translation || '').join('');
+            this.addToLog(fullOriginal, fullTranslated, siblings[0].startMs);
+            this.contextBuffer.push({ original: fullOriginal, translated: fullTranslated });
+            if (this.contextBuffer.length > 8) this.contextBuffer.shift();
+        }
+    },
+
+    // ── Translation Splitting (fallback) ──────────────────────────────────────
 
     /**
      * Split a block translation proportionally among all display segments
      * that share the same translateContext, so each segment shows only
      * its corresponding portion of the Chinese (or other native language)
      * translation instead of the entire block.
+     *
+     * Uses WORD COUNT (not character count) for proportions, because
+     * English words and Chinese characters have far more comparable
+     * information density than English characters vs Chinese characters.
+     * e.g. "frustrates" (10 chars, 1 word) ≈ "沮丧" (2 chars, 1 concept)
      */
     assignBlockTranslation(translateContext, fullTranslation) {
         const siblings = this.captions.filter(c => c.translateContext === translateContext);
@@ -826,56 +829,128 @@ const SubtitleManager = {
             return;
         }
 
-        // Calculate each segment's proportion of the total original text
-        const totalOrigLen = siblings.reduce((sum, s) => sum + s.text.length, 0);
         const trans = fullTranslation;
         const transLen = trans.length;
 
+        // Count words in each segment (English: split by spaces; CJK: each char ≈ 1 word)
+        const wordCounts = siblings.map(s => {
+            const words = s.text.split(/\s+/).filter(Boolean);
+            return words.length;
+        });
+        const totalWords = wordCounts.reduce((sum, c) => sum + c, 0);
+
+        // First pass: try to split at sentence-ending punctuation in translation.
+        // Count sentence-ending markers in both original and translation.
+        const origSentenceEnds = [];
+        let runningWords = 0;
+        for (let i = 0; i < siblings.length - 1; i++) {
+            runningWords += wordCounts[i];
+            const segText = siblings[i].text.trim();
+            // Check if this segment ends with sentence-ending punctuation
+            const endsSentence = /[.!?。！？]$/.test(segText) && !/\b(Mr|Mrs|Ms|Dr|Vs)\.$/i.test(segText);
+            origSentenceEnds.push({
+                index: i,
+                wordRatio: runningWords / totalWords,
+                endsSentence
+            });
+        }
+
+        // Find sentence-ending punctuation positions in translation
+        const transSentenceEnds = [];
+        for (let j = 0; j < transLen; j++) {
+            if (/[。？！.!?]/.test(trans[j])) {
+                transSentenceEnds.push(j + 1); // position AFTER the punctuation
+            }
+        }
+
+        // Try to align sentence boundaries between original and translation
         let usedChars = 0;
+        const breakPoints = []; // break positions in translation text
+
+        for (const info of origSentenceEnds) {
+            const targetEnd = Math.round(usedChars + (info.wordRatio * transLen) - usedChars);
+            const absoluteTarget = Math.round(info.wordRatio * transLen);
+
+            if (info.endsSentence && transSentenceEnds.length > 0) {
+                // Find the closest sentence-end in translation near the expected position
+                let bestSentEnd = -1;
+                let bestDist = Infinity;
+                for (const sePos of transSentenceEnds) {
+                    if (sePos <= usedChars) continue;
+                    if (sePos >= transLen) continue;
+                    const dist = Math.abs(sePos - absoluteTarget);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestSentEnd = sePos;
+                    }
+                }
+                // Accept if within reasonable range (40% of translation length)
+                if (bestSentEnd > 0 && bestDist < transLen * 0.4) {
+                    breakPoints.push(bestSentEnd);
+                    usedChars = bestSentEnd;
+                    continue;
+                }
+            }
+
+            // Fallback: use word-count ratio with natural break search
+            let targetPos = Math.round(info.wordRatio * transLen);
+            targetPos = Math.max(usedChars + 1, Math.min(targetPos, transLen - 1));
+            targetPos = this.findNaturalBreak(trans, targetPos, usedChars, transLen);
+            breakPoints.push(targetPos);
+            usedChars = targetPos;
+        }
+
+        // Apply the splits
+        let start = 0;
         for (let i = 0; i < siblings.length; i++) {
             if (i === siblings.length - 1) {
-                // Last segment gets everything remaining
-                siblings[i].translation = trans.slice(usedChars).trim();
+                siblings[i].translation = trans.slice(start).trim();
             } else {
-                const ratio = siblings[i].text.length / totalOrigLen;
-                let targetEnd = Math.round(usedChars + ratio * transLen);
-
-                // Clamp to valid range
-                targetEnd = Math.max(usedChars + 1, Math.min(targetEnd, transLen - 1));
-
-                // Try to find a natural break point near targetEnd (±15 chars)
-                targetEnd = this.findNaturalBreak(trans, targetEnd, usedChars, transLen);
-
-                siblings[i].translation = trans.slice(usedChars, targetEnd).trim();
-                usedChars = targetEnd;
+                const end = breakPoints[i];
+                siblings[i].translation = trans.slice(start, end).trim();
+                start = end;
             }
         }
     },
 
     /**
      * Find a natural break point in translation text near the target position.
-     * Prefers breaking after Chinese/English punctuation.
+     * Prefers breaking after Chinese/English punctuation, with priority given
+     * to stronger punctuation (sentence-ending > clause-level > other).
      */
     findNaturalBreak(text, target, minPos, maxPos) {
-        const SEARCH_RANGE = 15;
-        // Punctuation that makes good break points (prefer in this order)
-        const goodBreaks = /[。？！；，、.!?;,：:\s]/;
+        const SEARCH_RANGE = 20;
+
+        // Priority levels for break characters (lower = better)
+        const breakPriority = (ch) => {
+            if (/[。？！.!?]/.test(ch)) return 1;  // Sentence-ending
+            if (/[；;]/.test(ch)) return 2;          // Semicolons
+            if (/[，,]/.test(ch)) return 3;          // Commas
+            if (/[、：:]/.test(ch)) return 4;        // Other punctuation
+            if (/\s/.test(ch)) return 5;             // Whitespace
+            return 99;
+        };
 
         let bestPos = target;
-        let bestDist = SEARCH_RANGE + 1;
+        let bestScore = Infinity; // Lower is better: priority * 100 + distance
 
         for (let d = 0; d <= SEARCH_RANGE; d++) {
             for (const offset of [d, -d]) {
                 const pos = target + offset;
-                // Break AFTER punctuation, so check char at pos-1
-                if (pos > minPos && pos < maxPos && goodBreaks.test(text[pos - 1])) {
-                    if (d < bestDist) {
-                        bestDist = d;
+                if (pos <= minPos || pos >= maxPos) continue;
+
+                const ch = text[pos - 1]; // Check char BEFORE the break position
+                const pri = breakPriority(ch);
+                if (pri < 99) {
+                    const score = pri * 100 + d;
+                    if (score < bestScore) {
+                        bestScore = score;
                         bestPos = pos;
                     }
                 }
             }
-            if (bestDist <= d) break; // Found a close match, stop searching
+            // Stop early if we found a sentence-end nearby
+            if (bestScore < 200) break;
         }
         return bestPos;
     },

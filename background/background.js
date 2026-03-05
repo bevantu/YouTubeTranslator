@@ -74,6 +74,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
+    if (message.action === 'translateBlock') {
+        handleBlockTranslate(
+            message.segments, message.targetLang, message.nativeLang,
+            message.settings, message.context || []
+        )
+            .then(result => sendResponse({ success: true, result }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
     if (message.action === 'getDefinition') {
         handleDefinition(message.word, message.context, message.targetLang, message.nativeLang, message.settings)
             .then(result => sendResponse({ success: true, result }))
@@ -85,7 +95,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Remove only translation/definition cache keys, keep settings & vocab
         chrome.storage.local.get(null, (items) => {
             const keysToRemove = Object.keys(items).filter(k =>
-                k.startsWith('tr_') || k.startsWith('def_') || k.startsWith('dict_')
+                k.startsWith('tr_') || k.startsWith('def_') || k.startsWith('dict_') || k.startsWith('blk_')
             );
             if (keysToRemove.length) {
                 chrome.storage.local.remove(keysToRemove, () => {
@@ -290,6 +300,141 @@ CRITICAL RULES:
 
     if (translation) await setCache(cacheKey, translation);
     return translation;
+}
+
+// ─── Block Translation (numbered segments) ────────────────────────────────────
+
+/**
+ * Translate a block of numbered subtitle segments.
+ * AI sees the full context but translates each line separately,
+ * returning numbered translations for perfect alignment.
+ *
+ * @param {Array<{id: number, text: string}>} segments
+ * @param {string} targetLang
+ * @param {string} nativeLang
+ * @param {object} settings
+ * @param {Array} context
+ * @returns {Object} - Map of { id: translatedText }
+ */
+async function handleBlockTranslate(segments, targetLang, nativeLang, settings, context = []) {
+    if (!segments || !segments.length) return {};
+
+    // Build a stable cache key from all segment texts
+    const blockText = segments.map(s => `${s.id}:${s.text}`).join('|');
+    const cacheKey = makeCacheKey('blk', blockText, targetLang, nativeLang);
+    const cached = await getCache(cacheKey);
+    if (cached) return cached;
+
+    const tName = LANG_NAMES[targetLang] || targetLang;
+    const nName = LANG_NAMES[nativeLang] || nativeLang;
+
+    // Build numbered input lines
+    const numberedLines = segments.map(s => `[${s.id}] ${s.text}`).join('\n');
+
+    // Build context block
+    let contextBlock = '';
+    if (context && context.length > 0) {
+        const lines = context
+            .slice(-5)
+            .map(c => `  [${c.original}] → [${c.translated}]`)
+            .join('\n');
+        contextBlock = `\nRecent subtitles for context (do NOT retranslate):\n${lines}\n`;
+    }
+
+    const system = `You are an expert subtitle translator (${tName} to ${nName}).
+Each numbered line [N] is a subtitle segment displayed at a different time.
+Translate EACH line separately, preserving the numbering.
+
+CRITICAL RULES:
+- Translate into natural spoken ${nName}, NOT word-for-word.
+- Each [N] line must have its own complete translation.
+- Do NOT merge or split lines. Keep the 1:1 mapping.
+- Output ONLY the translations inside <TRANSLATIONS></TRANSLATIONS> tags.
+- Format: one line per segment, e.g. [1] 翻译内容`;
+
+    const userMsg = `${contextBlock}
+Translate these subtitle segments:
+${numberedLines}`;
+
+    let rawOutput;
+    if (settings.aiProvider === 'local') {
+        rawOutput = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1200);
+    } else {
+        rawOutput = await fetchOpenAI(system, userMsg, settings, 1500);
+    }
+
+    // Parse numbered translations from AI output
+    const result = parseNumberedTranslations(rawOutput || '', segments, nativeLang);
+
+    // Cache only if we got translations for all segments
+    const gotAll = segments.every(s => result[s.id] && result[s.id].length > 0);
+    if (gotAll) {
+        await setCache(cacheKey, result);
+    }
+    return result;
+}
+
+/**
+ * Parse AI output containing numbered translations like:
+ *   [1] 翻译内容
+ *   [2] 另一行翻译
+ * Returns { 1: "翻译内容", 2: "另一行翻译" }
+ */
+function parseNumberedTranslations(raw, segments, nativeLang) {
+    const result = {};
+
+    // Try to extract from <TRANSLATIONS> tags first
+    const tagsMatch = raw.match(/<TRANSLATIONS>([\s\S]*?)<\/TRANSLATIONS>/i);
+    const text = tagsMatch ? tagsMatch[1] : raw;
+
+    // Parse line by line for [N] pattern
+    const lines = text.split('\n');
+    for (const line of lines) {
+        const m = line.match(/^\s*\[(\d+)\]\s*(.+)$/);
+        if (m) {
+            const id = parseInt(m[1], 10);
+            let translation = m[2].trim().replace(/^["「『]|["」『]$/g, '').trim();
+            if (translation) result[id] = translation;
+        }
+    }
+
+    // Fallback: try "N." or "N)" format if [N] didn't match
+    if (Object.keys(result).length === 0) {
+        for (const line of lines) {
+            const m = line.match(/^\s*(\d+)[.)]\s*(.+)$/);
+            if (m) {
+                const id = parseInt(m[1], 10);
+                let translation = m[2].trim().replace(/^["「『]|["」『]$/g, '').trim();
+                if (translation) result[id] = translation;
+            }
+        }
+    }
+
+    // If still missing segments, try extracting CJK lines in order
+    const missingSegs = segments.filter(s => !result[s.id]);
+    if (missingSegs.length > 0 && ['zh', 'ja', 'ko'].includes(nativeLang)) {
+        const cjkLines = text.split('\n')
+            .map(l => l.replace(/^\[?\d+\]?\s*[.):]?\s*/, '').trim())
+            .filter(l => {
+                const cjkChars = (l.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
+                return l.length > 1 && cjkChars / l.length > 0.3;
+            });
+
+        // Assign CJK lines to missing segments in order
+        let cjkIdx = 0;
+        for (const seg of segments) {
+            if (!result[seg.id] && cjkIdx < cjkLines.length) {
+                result[seg.id] = cjkLines[cjkIdx++];
+            }
+        }
+    }
+
+    // Fill any remaining with empty string
+    for (const seg of segments) {
+        if (!result[seg.id]) result[seg.id] = '';
+    }
+
+    return result;
 }
 
 // ─── Definition ───────────────────────────────────────────────────────────────
