@@ -410,13 +410,46 @@ async function fetchOllama(prompt, settings, numPredict = 800) {
     );
 }
 
-// ─── Dictionary Lookup (Free APIs, parallel) ─────────────────────────────────
+// ─── Dictionary Lookup (Dictionary API + Google Translate) ───────────────────
 
 const NATIVE_LANG_MAP = {
     zh: 'zh-CN', en: 'en', ja: 'ja', ko: 'ko', es: 'es',
     fr: 'fr', de: 'de', ru: 'ru', pt: 'pt', it: 'it',
     ar: 'ar', hi: 'hi', th: 'th', vi: 'vi', tr: 'tr'
 };
+
+/**
+ * Translate text(s) via Google Translate (free, no API key).
+ * Accepts a single string or joins multiple texts with '\n' for batch.
+ * Returns an array of translated strings.
+ */
+async function googleTranslateBatch(texts, nativeLang) {
+    const tl = NATIVE_LANG_MAP[nativeLang] || 'zh-CN';
+    const joined = Array.isArray(texts) ? texts.join('\n') : texts;
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=${tl}&dt=t&dj=1&q=${encodeURIComponent(joined)}`;
+
+    try {
+        const res = await fetch(url);
+        if (!res.ok) return Array.isArray(texts) ? texts.map(() => '') : '';
+        const data = await res.json();
+
+        // Reassemble the translated text from sentence fragments
+        const fullTranslation = (data.sentences || [])
+            .map(s => s.trans || '')
+            .join('')
+            .trim();
+
+        if (Array.isArray(texts)) {
+            // Split back by newlines to match original array
+            const parts = fullTranslation.split('\n');
+            // Pad with empty strings if needed
+            return texts.map((_, i) => (parts[i] || '').trim());
+        }
+        return fullTranslation;
+    } catch {
+        return Array.isArray(texts) ? texts.map(() => '') : '';
+    }
+}
 
 async function handleDictLookup(word, nativeLang = 'zh') {
     if (!word) return null;
@@ -428,16 +461,12 @@ async function handleDictLookup(word, nativeLang = 'zh') {
     const cached = await getCache(cacheKey);
     if (cached) return cached;
 
-    // Run BOTH lookups in parallel for speed
-    const [dictResult, transResult] = await Promise.allSettled([
-        // 1. English phonetics & definitions from dictionaryapi.dev
+    // Step 1: Fetch English dictionary data + quick word translation in parallel
+    const [dictResult, wordTransResult] = await Promise.allSettled([
         fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleanWord)}`)
             .then(r => r.ok ? r.json() : null)
             .catch(() => null),
-        // 2. Quick translation via MyMemory (free, no key needed)
-        fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(cleanWord)}&langpair=en|${NATIVE_LANG_MAP[nativeLang] || 'zh-CN'}`)
-            .then(r => r.ok ? r.json() : null)
-            .catch(() => null)
+        googleTranslateBatch(cleanWord, nativeLang)
     ]);
 
     // Extract phonetics, audio, and meanings from dictionaryapi.dev
@@ -448,8 +477,7 @@ async function handleDictLookup(word, nativeLang = 'zh') {
         phonetic = entry.phonetic || entry.phonetics?.find(p => p.text)?.text || '';
         audioUrl = entry.phonetics?.find(p => p.audio)?.audio || '';
 
-        // Collect up to 3 meanings with POS, definitions, and examples
-        meanings = (entry.meanings || []).slice(0, 3).map(m => ({
+        meanings = (entry.meanings || []).slice(0, 4).map(m => ({
             pos: m.partOfSpeech || '',
             definitions: (m.definitions || []).slice(0, 2).map(d => ({
                 def: d.definition || '',
@@ -458,11 +486,36 @@ async function handleDictLookup(word, nativeLang = 'zh') {
         }));
     }
 
-    // Extract translation from MyMemory
+    // Quick translation of the word itself
     let quickTranslation = '';
-    const transData = transResult.status === 'fulfilled' ? transResult.value : null;
-    if (transData?.responseStatus === 200 && transData?.responseData?.translatedText) {
-        quickTranslation = transData.responseData.translatedText;
+    if (wordTransResult.status === 'fulfilled' && wordTransResult.value) {
+        quickTranslation = typeof wordTransResult.value === 'string'
+            ? wordTransResult.value
+            : (wordTransResult.value[0] || '');
+    }
+
+    // Step 2: Batch-translate all English definitions to Chinese
+    const allDefs = [];
+    for (const m of meanings) {
+        for (const d of m.definitions) {
+            if (d.def) allDefs.push(d.def);
+        }
+    }
+
+    if (allDefs.length > 0) {
+        try {
+            const translations = await googleTranslateBatch(allDefs, nativeLang);
+            let idx = 0;
+            for (const m of meanings) {
+                for (const d of m.definitions) {
+                    if (d.def) {
+                        d.defTranslation = translations[idx++] || '';
+                    }
+                }
+            }
+        } catch {
+            // If translation fails, definitions still show in English
+        }
     }
 
     const result = { phonetic, audioUrl, quickTranslation, meanings };

@@ -127,170 +127,284 @@
   display: none;
   position: fixed;
   z-index: 99999;
-  width: 340px;
-  max-height: 70vh;
+  width: 380px;
+  max-height: 75vh;
   overflow-y: auto;
-  background: var(--yb-bg-card);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-radius: var(--yb-radius);
-  border: 1px solid var(--yb-border);
-  box-shadow: var(--yb-shadow), 0 0 0 1px rgba(99, 102, 241, 0.1);
-  animation: yb-slideUp 0.2s ease;
-  font-family: 'Inter', 'Segoe UI', 'Roboto', sans-serif;
+  background: linear-gradient(180deg, rgba(18, 22, 32, 0.98), rgba(12, 15, 24, 0.98));
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(99, 102, 241, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  animation: yb-popupEntry 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  font-family: 'Inter', 'Segoe UI', 'Roboto', 'Microsoft YaHei', sans-serif;
 }
 
+.yt-bilingual-popup::-webkit-scrollbar {
+  width: 5px;
+}
+
+.yt-bilingual-popup::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.yt-bilingual-popup::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+@keyframes yb-popupEntry {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ── Header ── */
 .yb-popup-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(168, 85, 247, 0.1));
-  border-bottom: 1px solid var(--yb-border);
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.2), rgba(139, 92, 246, 0.15));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.yb-popup-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
 }
 
 .yb-popup-word {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
-  color: var(--yb-text-primary);
+  color: #60a5fa;
   letter-spacing: 0.02em;
 }
 
 .yb-popup-pronunciation {
   font-size: 13px;
-  color: var(--yb-text-secondary);
+  color: rgba(255, 255, 255, 0.5);
   font-style: italic;
 }
 
 .yb-popup-audio-btn {
-  background: none;
-  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   cursor: pointer;
-  font-size: 16px;
-  padding: 2px 6px;
-  border-radius: 6px;
+  font-size: 15px;
+  padding: 4px 8px;
+  border-radius: 8px;
   transition: all var(--yb-transition);
-  opacity: 0.7;
+  color: #93c5fd;
 }
 
 .yb-popup-audio-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  opacity: 1;
+  background: rgba(96, 165, 250, 0.15);
+  border-color: rgba(96, 165, 250, 0.3);
+  transform: scale(1.08);
 }
 
 .yb-popup-close {
-  margin-left: auto;
-  background: none;
-  border: none;
-  color: var(--yb-text-secondary);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.4);
   cursor: pointer;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: 8px;
   transition: all var(--yb-transition);
-  font-size: 16px;
+  font-size: 14px;
+  flex-shrink: 0;
 }
 
 .yb-popup-close:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--yb-text-primary);
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
 }
 
-/* ── Dictionary Section ── */
-.yb-popup-dict {
-  padding: 10px 16px;
+/* ── Section Bar ── */
+.yb-popup-section-bar {
+  display: flex;
+  align-items: center;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 
-.yb-popup-dict-loading {
+.yb-section-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.6);
+  letter-spacing: 0.03em;
+}
+
+/* ── Basic Translation Section ── */
+.yb-popup-basic {
+  padding: 0;
+}
+
+.yb-popup-basic-loading {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--yb-text-secondary);
+  color: rgba(255, 255, 255, 0.5);
   font-size: 12px;
-  padding: 4px 0;
+  padding: 12px 14px;
 }
 
-.yb-popup-dict-empty {
+.yb-popup-basic-empty {
   font-size: 12px;
-  color: var(--yb-text-secondary);
-  padding: 2px 0;
+  color: rgba(255, 255, 255, 0.35);
+  padding: 12px 14px;
+  text-align: center;
 }
 
-.yb-dict-meaning {
-  margin-bottom: 8px;
+.yb-popup-basic-content {
+  padding: 10px 14px;
 }
 
-.yb-dict-meaning:last-child {
-  margin-bottom: 0;
-}
-
-.yb-dict-pos {
-  display: inline-block;
-  font-size: 11px;
-  color: var(--yb-primary);
-  background: var(--yb-primary-light);
-  padding: 1px 8px;
-  border-radius: 4px;
+/* Quick translation (prominent) */
+.yb-basic-translation {
+  font-size: 17px;
+  color: #f0f0f5;
   font-weight: 600;
-  margin-bottom: 4px;
+  line-height: 1.5;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.yb-dict-def {
+.yb-basic-translation:empty {
+  display: none;
+}
+
+/* POS Meaning Groups */
+.yb-meaning-group {
+  margin-bottom: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.yb-meaning-group:last-child {
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.yb-meaning-pos {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  letter-spacing: 0.03em;
+  text-transform: lowercase;
+  background: rgba(139, 92, 246, 0.15);
+  color: #c4b5fd;
+}
+
+/* English definition */
+.yb-meaning-en-def {
   font-size: 13px;
-  color: var(--yb-text-primary);
+  color: rgba(255, 255, 255, 0.7);
   line-height: 1.5;
-  margin: 2px 0;
-  padding-left: 8px;
+  margin: 3px 0 1px 0;
+  padding-left: 10px;
   border-left: 2px solid rgba(255, 255, 255, 0.06);
 }
 
-.yb-dict-example {
+/* Chinese translation of definition */
+.yb-meaning-zh-def {
   font-size: 12px;
-  color: var(--yb-text-secondary);
+  color: #93c5fd;
+  line-height: 1.5;
+  margin: 1px 0 4px 0;
+  padding-left: 10px;
+  border-left: 2px solid rgba(96, 165, 250, 0.15);
   font-style: italic;
-  padding-left: 8px;
-  margin-bottom: 4px;
-  opacity: 0.8;
 }
 
-.yb-dict-translation {
-  font-size: 16px;
-  color: var(--yb-text-primary);
-  font-weight: 500;
-  line-height: 1.5;
+/* Examples Section */
+.yb-basic-examples-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.yb-examples-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 6px;
+  letter-spacing: 0.03em;
+}
+
+.yb-example-item {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  line-height: 1.6;
+  padding: 4px 8px;
+  margin-bottom: 3px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px;
+  border-left: 2px solid rgba(99, 102, 241, 0.3);
+}
+
+.yb-example-highlight {
+  color: #60a5fa;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: rgba(96, 165, 250, 0.3);
+  text-underline-offset: 2px;
 }
 
 /* ── Divider ── */
 .yb-popup-divider {
   height: 1px;
-  background: var(--yb-border);
-  margin: 0 16px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+  margin: 0 14px;
 }
 
 /* ── AI Section ── */
 .yb-popup-ai {
-  padding: 10px 16px;
+  padding: 10px 14px;
 }
 
 .yb-popup-ai-label {
   font-size: 11px;
-  font-weight: 600;
-  color: var(--yb-text-secondary);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.55);
   margin-bottom: 6px;
   letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .yb-popup-ai-loading {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--yb-text-secondary);
+  color: rgba(255, 255, 255, 0.45);
   font-size: 12px;
   padding: 4px 0;
 }
 
 .yb-popup-ai-translation {
   font-size: 14px;
-  color: var(--yb-text-primary);
+  color: #e2e8f0;
   font-weight: 500;
   line-height: 1.5;
   margin-bottom: 4px;
@@ -298,16 +412,16 @@
 
 .yb-popup-ai-explanation {
   font-size: 12px;
-  color: var(--yb-text-secondary);
-  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.6;
 }
 
 /* ── Spinners ── */
 .yb-spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid var(--yb-border);
-  border-top-color: var(--yb-primary);
+  border: 2px solid rgba(255, 255, 255, 0.08);
+  border-top-color: #6366f1;
   border-radius: 50%;
   animation: yb-spin 0.8s linear infinite;
 }
@@ -315,18 +429,20 @@
 .yb-spinner-sm {
   width: 14px;
   height: 14px;
-  border: 2px solid var(--yb-border);
-  border-top-color: var(--yb-primary);
+  border: 2px solid rgba(255, 255, 255, 0.08);
+  border-top-color: #6366f1;
   border-radius: 50%;
   animation: yb-spin 0.8s linear infinite;
 }
 
+/* ── Action Buttons ── */
 .yb-popup-actions {
   display: flex;
   gap: 8px;
-  padding: 10px 16px;
-  border-top: 1px solid var(--yb-border);
-  background: rgba(0, 0, 0, 0.15);
+  padding: 10px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 0 0 14px 14px;
 }
 
 .yb-btn {
@@ -336,10 +452,10 @@
   justify-content: center;
   gap: 6px;
   padding: 8px 12px;
-  border: 1px solid var(--yb-border);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--yb-radius-sm);
   background: transparent;
-  color: var(--yb-text-secondary);
+  color: rgba(255, 255, 255, 0.45);
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
@@ -354,14 +470,14 @@
 }
 
 .yb-btn-known.active {
-  background: var(--yb-success-light);
-  border-color: var(--yb-success);
-  color: var(--yb-success);
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #34d399;
 }
 
 .yb-btn-learning.active {
-  background: rgba(96, 165, 250, 0.15);
-  border-color: #60a5fa;
+  background: rgba(96, 165, 250, 0.12);
+  border-color: rgba(96, 165, 250, 0.3);
   color: #60a5fa;
 }
 
