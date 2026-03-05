@@ -75,21 +75,55 @@ const SubtitleManager = {
      * @param {string} rawText  - Raw response body (JSON or XML string)
      * @param {string} url      - Original request URL (used to detect format)
      */
-    loadTimedText(rawText, url) {
-        let entries = [];
-        try {
-            // YouTube JSON3 format (most common for modern captions)
-            const json = JSON.parse(rawText);
-            if (json.events) {
-                entries = this.parseJSON3(json);
-            }
-        } catch {
+    async loadTimedText(rawText, url) {
+        let isJson3 = (url && url.includes('fmt=json3')) || (rawText.startsWith('{') && rawText.includes('events'));
+        if (!isJson3) {
             // Fallback: XML timedtext format
-            entries = this.parseXML(rawText);
+            const entries = this.parseXML(rawText);
+            if (entries.length) this._setupCaptions(entries);
+            return;
         }
 
-        if (!entries.length) return;
+        let json = null;
+        try { json = JSON.parse(rawText); } catch { return; }
 
+        let baseJson = json;
+        let transJson = null;
+
+        // If AI Translation is disabled, we fetch the native YouTube translation track directly.
+        if (this.settings.autoTranslate && !this.settings.useAITranslation && url) {
+            try {
+                let tlang = this.settings.nativeLanguage;
+                if (tlang === 'zh') tlang = 'zh-Hans';
+
+                const parsedUrl = new URL(url.startsWith('/') ? window.location.origin + url : url);
+                if (parsedUrl.searchParams.has('tlang')) {
+                    // The intercepted one IS the translation. Fetch the original.
+                    transJson = json;
+                    const origUrl = new URL(parsedUrl);
+                    origUrl.searchParams.delete('tlang');
+                    const res = await fetch(origUrl.toString());
+                    baseJson = await res.json();
+                } else {
+                    // The intercepted one is the original. Fetch the translation.
+                    baseJson = json;
+                    const transUrl = new URL(parsedUrl);
+                    transUrl.searchParams.set('tlang', tlang);
+                    const res = await fetch(transUrl.toString());
+                    transJson = await res.json();
+                }
+            } catch (err) {
+                console.warn('[YT Bilingual] Failed to fetch native translation track:', err);
+                baseJson = json;
+                transJson = null;
+            }
+        }
+
+        const entries = this.parseJSON3(baseJson, transJson);
+        if (entries.length) this._setupCaptions(entries);
+    },
+
+    _setupCaptions(entries) {
         console.log(`[YT Bilingual] Loaded ${entries.length} caption entries`);
         // Cancel any previous pre-translation run
         this.preTranslating = false;
@@ -101,8 +135,8 @@ const SubtitleManager = {
         // Hide YouTube's own caption layer
         this.hideNativeCaptions(true);
 
-        // Start background pre-translation with warmup phase
-        if (this.settings.autoTranslate) {
+        // Start background AI pre-translation with warmup phase
+        if (this.settings.autoTranslate && this.settings.useAITranslation) {
             setTimeout(() => this.warmupAndTranslate(), 500);
         }
     },
@@ -276,14 +310,20 @@ const SubtitleManager = {
 
     /**
      * Parse YouTube JSON3 caption format.
-     *
-     * Auto-gen captions use a ROLLING WINDOW - each event is a short
-     * sliding phrase (typically 4-7 words). We merge consecutive events
-     * into longer sentence-like segments (~8-15 words, 40-80 chars)
-     * similar to Language Reactor's subtitle length, then group them
-     * into context blocks for translation.
+     * Optionally takes the translated Json body and perfectly aligns it.
      */
-    parseJSON3(json) {
+    parseJSON3(json, transJson = null) {
+        // Map translations by startMs
+        const transMap = new Map();
+        if (transJson && transJson.events) {
+            for (const ev of transJson.events) {
+                if (ev.tStartMs != null && ev.segs) {
+                    const text = ev.segs.map(s => (s.utf8 || '').replace(/\n/g, ' ')).join('').trim();
+                    transMap.set(ev.tStartMs, text);
+                }
+            }
+        }
+
         // Step 1: collect events with exact YouTube timestamps
         const raw = [];
         for (const ev of json.events) {
@@ -296,14 +336,14 @@ const SubtitleManager = {
                 startMs: ev.tStartMs,
                 endMs: ev.tStartMs + ev.dDurationMs,
                 text,
-                translation: null,
+                translation: transMap.get(ev.tStartMs) || null,
                 translateContext: ''
             });
         }
         if (!raw.length) return [];
         raw.sort((a, b) => a.startMs - b.startMs);
 
-        // Step 2: dedup by startMs (keep the longest text if multiple payloads arrive for exact same ms)
+        // Step 2: dedup by startMs
         const byStart = new Map();
         for (const e of raw) {
             const ex = byStart.get(e.startMs);
@@ -318,17 +358,14 @@ const SubtitleManager = {
             }
         }
 
-        // Step 4: Deduplicate rolling window — extract only NEW words from each event.
-        // YouTube rolling-window captions repeat words from the previous event.
-        // We build a list of "atomic segments", each containing only the new words
-        // introduced by that event, with correct timing boundaries.
-        const atoms = []; // { startMs, endMs, newText }
+        // Step 4: Deduplicate rolling window — extract new words and translations
+        const atoms = [];
         let prevFullText = '';
+        let prevTransText = '';
         for (const ev of events) {
             const evWords = ev.text.split(/\s+/).filter(Boolean);
             const prevWords = prevFullText.split(/\s+/).filter(Boolean);
 
-            // Find the longest suffix of prevWords that matches a prefix of evWords (overlap)
             let overlapLen = 0;
             for (let len = Math.min(prevWords.length, evWords.length); len > 0; len--) {
                 if (prevWords.slice(-len).join(' ').toLowerCase() === evWords.slice(0, len).join(' ').toLowerCase()) {
@@ -338,24 +375,43 @@ const SubtitleManager = {
             }
 
             const newWords = overlapLen > 0 ? evWords.slice(overlapLen) : evWords;
+
+            // Trans deduplication (string overlap works better for CJK without spaces)
+            let evTrans = ev.translation || '';
+            let newTrans = evTrans;
+            if (newTrans && prevTransText && newTrans.startsWith(prevTransText)) {
+                newTrans = newTrans.slice(prevTransText.length).trim();
+            } else if (newTrans) {
+                let maxOver = Math.min(prevTransText.length, newTrans.length);
+                let over = 0;
+                for (let j = maxOver; j > 0; j--) {
+                    if (prevTransText.endsWith(newTrans.slice(0, j))) {
+                        over = j;
+                        break;
+                    }
+                }
+                if (over > 0) newTrans = newTrans.slice(over).trim();
+            }
+
             if (newWords.length > 0) {
                 atoms.push({
                     startMs: ev.startMs,
                     endMs: ev.endMs,
-                    newText: newWords.join(' ')
+                    newText: newWords.join(' '),
+                    newTrans: newTrans
                 });
             }
             prevFullText = ev.text;
+            if (evTrans) prevTransText = evTrans;
         }
 
-        // Step 5: Merge atoms into longer sentence-like segments (~40-80 chars, 8-15 words).
-        // Break at: sentence-ending punctuation, time gaps > 600ms, or when hitting
-        // the target length. This produces segments similar to Language Reactor.
+        // Step 5: Merge atoms into longer sentence-like segments (~40-80 chars)
         const MIN_SEGMENT_CHARS = 35;
         const TARGET_SEGMENT_CHARS = 60;
         const MAX_SEGMENT_CHARS = 90;
         const merged = [];
         let segText = '';
+        let segTrans = '';
         let segStart = 0;
         let segEnd = 0;
 
@@ -363,17 +419,13 @@ const SubtitleManager = {
             const atom = atoms[i];
             const gap = segText ? (atom.startMs - segEnd) : 0;
 
-            // Decide whether to start a new segment
             let shouldBreak = false;
             if (segText) {
-                // Break on time gap
                 if (gap > 600) shouldBreak = true;
-                // Break if previous text ended with sentence punctuation and we're past min length
                 const trimmed = segText.trim();
                 if (trimmed.match(/[.!?。！？]$/) && !trimmed.match(/\b(Mr|Mrs|Ms|Dr|Vs)\.$/i) && segText.length >= MIN_SEGMENT_CHARS) {
                     shouldBreak = true;
                 }
-                // Break if adding this atom would exceed max length
                 if ((segText + ' ' + atom.newText).length > MAX_SEGMENT_CHARS && segText.length >= MIN_SEGMENT_CHARS) {
                     shouldBreak = true;
                 }
@@ -384,43 +436,44 @@ const SubtitleManager = {
                     startMs: segStart,
                     endMs: segEnd,
                     text: segText.trim(),
-                    translation: null,
+                    translation: segTrans.trim() || null,
                     translateContext: ''
                 });
                 segText = '';
+                segTrans = '';
             }
 
             if (!segText) {
                 segStart = atom.startMs;
                 segText = atom.newText;
+                segTrans = atom.newTrans;
             } else {
                 segText += ' ' + atom.newText;
+                segTrans += (segTrans && atom.newTrans ? ' ' : '') + atom.newTrans;
             }
             segEnd = atom.endMs;
 
-            // If we reached a good length and are at a natural boundary, flush
             if (segText.length >= TARGET_SEGMENT_CHARS) {
                 const trimmed = segText.trim();
-                // Check for mid-sentence punctuation like comma or "and" at the end
                 if (trimmed.match(/[,;:，；：]$/) || trimmed.match(/[.!?。！？]$/)) {
                     merged.push({
                         startMs: segStart,
                         endMs: segEnd,
                         text: trimmed,
-                        translation: null,
+                        translation: segTrans.trim() || null,
                         translateContext: ''
                     });
                     segText = '';
+                    segTrans = '';
                 }
             }
         }
-        // Flush remaining
         if (segText.trim()) {
             merged.push({
                 startMs: segStart,
                 endMs: segEnd,
                 text: segText.trim(),
-                translation: null,
+                translation: segTrans.trim() || null,
                 translateContext: ''
             });
         }
@@ -555,7 +608,7 @@ const SubtitleManager = {
         this.lastRenderedText = entry.text;
 
         // Determine loading state
-        const needsTranslation = this.settings.autoTranslate && entry.translation === null;
+        const needsTranslation = this.settings.autoTranslate && this.settings.useAITranslation && entry.translation === null;
         // Show immediately with full original text
         this.renderSubtitle(entry.text, entry.translation, needsTranslation);
 

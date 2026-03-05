@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         targetLang: document.getElementById('targetLanguage'),
         nativeLang: document.getElementById('nativeLanguage'),
         profLevel: document.getElementById('proficiencyLevel'),
+        useAITranslation: document.getElementById('useAITranslation'),
         apiKey: document.getElementById('apiKey'),
         apiEndpoint: document.getElementById('apiEndpoint'),
         apiModel: document.getElementById('apiModel'),
@@ -155,6 +156,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         els.targetLang.value = s.targetLanguage;
         els.nativeLang.value = s.nativeLanguage;
         els.profLevel.value = s.proficiencyLevel;
+        if (els.useAITranslation) els.useAITranslation.checked = s.useAITranslation;
 
         // AI settings
         document.querySelector(`input[name="aiProvider"][value="${s.aiProvider}"]`).checked = true;
@@ -191,6 +193,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             targetLanguage: els.targetLang.value,
             nativeLanguage: els.nativeLang.value,
             proficiencyLevel: els.profLevel.value,
+            useAITranslation: els.useAITranslation ? els.useAITranslation.checked : true,
             aiProvider: document.querySelector('input[name="aiProvider"]:checked').value,
             apiKey: els.apiKey.value,
             apiEndpoint: els.apiEndpoint.value,

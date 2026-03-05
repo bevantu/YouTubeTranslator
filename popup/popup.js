@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const targetLang = document.getElementById('targetLanguage');
     const nativeLang = document.getElementById('nativeLanguage');
     const profLevel = document.getElementById('proficiencyLevel');
+    const useAITranslation = document.getElementById('useAITranslation');
     const statusSection = document.getElementById('statusSection');
     const learningStat = document.getElementById('learningStat');
     const masteredStat = document.getElementById('masteredStat');
@@ -16,6 +17,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     targetLang.value = settings.targetLanguage;
     nativeLang.value = settings.nativeLanguage;
     profLevel.value = settings.proficiencyLevel;
+    if (useAITranslation) useAITranslation.checked = settings.useAITranslation;
 
     updateStatus(settings.enabled);
 
@@ -38,6 +40,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             chrome.tabs.sendMessage(tab.id, { action: 'toggleExtension', enabled: newSettings.enabled });
         }
     });
+
+    // Event: Use AI Translation
+    if (useAITranslation) {
+        useAITranslation.addEventListener('change', async () => {
+            const newSettings = await StorageHelper.getSettings();
+            newSettings.useAITranslation = useAITranslation.checked;
+            await StorageHelper.saveSettings(newSettings);
+        });
+    }
 
     // Event: Change target language
     targetLang.addEventListener('change', async () => {
