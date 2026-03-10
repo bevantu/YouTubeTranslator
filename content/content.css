@@ -38,6 +38,7 @@
   align-items: center;
   gap: 4px;
   pointer-events: auto;
+  width: min(92vw, 1400px);
   max-width: 95%;
   cursor: pointer;
 }
@@ -53,7 +54,13 @@
   font-family: 'Inter', 'Segoe UI', 'Roboto', sans-serif;
   border: 1px solid var(--yb-border);
   animation: yb-fadeIn 0.2s ease;
-  white-space: nowrap;
+  width: fit-content;
+  max-width: min(88vw, 1320px);
+  box-sizing: border-box;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+  text-wrap: pretty;
 }
 
 .yb-subtitle-original {

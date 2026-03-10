@@ -226,6 +226,26 @@ function extractFinalTranslation(raw, nativeLang) {
     return cleaned;
 }
 
+function normalizeTranslationText(text) {
+    return (text || '')
+        .trim()
+        .replace(/\\n/g, ' ')
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .replace(/^["「『]|["」』]$/g, '')
+        .trim();
+}
+
+function buildRecentContextBlock(context = []) {
+    if (!context || context.length === 0) return '';
+
+    const lines = context
+        .slice(-5)
+        .map(c => `  [${c.original}] → [${c.translated}]`)
+        .join('\n');
+    return `\nRecent subtitles for context (do NOT retranslate):\n${lines}\n`;
+}
+
 async function handleTranslate(text, targetLang, nativeLang, settings, context = [], skipCache = false, mode = 'quality') {
     if (!text || !text.trim()) return '';
 
@@ -239,14 +259,8 @@ async function handleTranslate(text, targetLang, nativeLang, settings, context =
     const nName = LANG_NAMES[nativeLang] || nativeLang;
 
     // Build context block from recent subtitles
-    let contextBlock = '';
-    if (context && context.length > 0) {
-        const lines = context
-            .slice(-5)
-            .map(c => `  [${c.original}] → [${c.translated}]`)
-            .join('\n');
-        contextBlock = `\n\nRecent subtitles (do NOT retranslate):\n${lines}\n`;
-    }
+    const contextLines = buildRecentContextBlock(context);
+    const contextBlock = contextLines ? `\n\n${contextLines}` : '';
 
     let system, userMsg, translation;
 
@@ -290,13 +304,7 @@ CRITICAL RULES:
     }
 
     // Strip accidental quotes, whitespace, and any newlines
-    translation = (translation || '')
-        .trim()
-        .replace(/\\n/g, ' ')    // literal backslash-n from LLM
-        .replace(/[\r\n]+/g, ' ') // actual newlines
-        .replace(/\s{2,}/g, ' ') // collapse multiple spaces
-        .replace(/^["「『]|["」』]$/g, '')
-        .trim();
+    translation = normalizeTranslationText(translation);
 
     if (translation) await setCache(cacheKey, translation);
     return translation;
@@ -328,29 +336,33 @@ async function handleBlockTranslate(segments, targetLang, nativeLang, settings, 
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
 
-    // Build numbered input lines
-    const numberedLines = segments.map(s => `[${s.id}] ${s.text}`).join('\n');
+    // Build numbered input lines with neighboring source-only hints.
+    const numberedLines = segments.map(s => {
+        const lines = [`[${s.id}] CURRENT: ${s.text}`];
+        if (s.prevText) lines.push(`PREV_SOURCE: ${s.prevText}`);
+        if (s.nextText) lines.push(`NEXT_SOURCE: ${s.nextText}`);
+        if (s.displayBreakReason) lines.push(`BREAK_REASON: ${s.displayBreakReason}`);
+        return lines.join('\n');
+    }).join('\n\n');
 
-    // Build context block
-    let contextBlock = '';
-    if (context && context.length > 0) {
-        const lines = context
-            .slice(-5)
-            .map(c => `  [${c.original}] → [${c.translated}]`)
-            .join('\n');
-        contextBlock = `\nRecent subtitles for context (do NOT retranslate):\n${lines}\n`;
-    }
+    const contextBlock = buildRecentContextBlock(context);
 
     const system = `You are an expert subtitle translator (${tName} to ${nName}).
-Each numbered line [N] is a subtitle segment displayed at a different time.
-Translate EACH line separately, preserving the numbering.
+Each numbered item [N] is a subtitle segment shown at a different time.
+Translate EACH item separately and preserve the numbering.
 
 CRITICAL RULES:
-- Translate into natural spoken ${nName}, NOT word-for-word.
-- Each [N] line must have its own complete translation.
-- Do NOT merge or split lines. Keep the 1:1 mapping.
+- Translate into natural spoken ${nName}, but be lossless with meaning.
+- NEVER summarize, compress away, or omit concrete details.
+- Preserve all list items, entities, numbers, proper nouns, and parallel structures.
+- If the source says "PDFs or code files or entire books", the translation must include all three items.
+- CURRENT is the only text to translate.
+- PREV_SOURCE and NEXT_SOURCE are context hints only. Use them only to resolve fragment meaning.
+- Do NOT pull extra meaning from PREV_SOURCE or NEXT_SOURCE into the current line.
+- If CURRENT is a fragment, keep the translation fragmentary too.
+- Do NOT merge or split items. Keep 1:1 mapping.
 - Output ONLY the translations inside <TRANSLATIONS></TRANSLATIONS> tags.
-- Format: one line per segment, e.g. [1] 翻译内容`;
+- Format: one line per item, exactly like [1] 翻译内容`;
 
     const userMsg = `${contextBlock}
 Translate these subtitle segments:
@@ -365,6 +377,15 @@ ${numberedLines}`;
 
     // Parse numbered translations from AI output
     const result = parseNumberedTranslations(rawOutput || '', segments, nativeLang);
+    const missingSegments = segments.filter(s => !result[s.id]);
+    if (missingSegments.length > 0) {
+        const fallbackTranslations = await translateMissingSegments(missingSegments, segments, targetLang, nativeLang, settings, context);
+        for (const segment of missingSegments) {
+            if (fallbackTranslations[segment.id]) {
+                result[segment.id] = fallbackTranslations[segment.id];
+            }
+        }
+    }
 
     // Cache only if we got translations for all segments
     const gotAll = segments.every(s => result[s.id] && result[s.id].length > 0);
@@ -387,32 +408,28 @@ function parseNumberedTranslations(raw, segments, nativeLang) {
     const tagsMatch = raw.match(/<TRANSLATIONS>([\s\S]*?)<\/TRANSLATIONS>/i);
     const text = tagsMatch ? tagsMatch[1] : raw;
 
-    // Parse line by line for [N] pattern
-    const lines = text.split('\n');
-    for (const line of lines) {
-        const m = line.match(/^\s*\[(\d+)\]\s*(.+)$/);
-        if (m) {
-            const id = parseInt(m[1], 10);
-            let translation = m[2].trim().replace(/^["「『]|["」『]$/g, '').trim();
-            if (translation) result[id] = translation;
-        }
+    const bracketPattern = /\[(\d+)\]\s*([\s\S]*?)(?=(?:\s*\[\d+\]\s*)|$)/g;
+    for (const match of text.matchAll(bracketPattern)) {
+        const id = parseInt(match[1], 10);
+        const translation = normalizeTranslationText(match[2]);
+        if (translation) result[id] = translation;
     }
 
     // Fallback: try "N." or "N)" format if [N] didn't match
     if (Object.keys(result).length === 0) {
+        const lines = text.split('\n');
         for (const line of lines) {
             const m = line.match(/^\s*(\d+)[.)]\s*(.+)$/);
             if (m) {
                 const id = parseInt(m[1], 10);
-                let translation = m[2].trim().replace(/^["「『]|["」『]$/g, '').trim();
+                const translation = normalizeTranslationText(m[2]);
                 if (translation) result[id] = translation;
             }
         }
     }
 
-    // If still missing segments, try extracting CJK lines in order
-    const missingSegs = segments.filter(s => !result[s.id]);
-    if (missingSegs.length > 0 && ['zh', 'ja', 'ko'].includes(nativeLang)) {
+    // Only use positional CJK fallback when the model gave us no usable numbering at all.
+    if (Object.keys(result).length === 0 && ['zh', 'ja', 'ko'].includes(nativeLang)) {
         const cjkLines = text.split('\n')
             .map(l => l.replace(/^\[?\d+\]?\s*[.):]?\s*/, '').trim())
             .filter(l => {
@@ -420,10 +437,10 @@ function parseNumberedTranslations(raw, segments, nativeLang) {
                 return l.length > 1 && cjkChars / l.length > 0.3;
             });
 
-        // Assign CJK lines to missing segments in order
+        // Assign CJK lines to segments in order only as a last resort.
         let cjkIdx = 0;
         for (const seg of segments) {
-            if (!result[seg.id] && cjkIdx < cjkLines.length) {
+            if (cjkIdx < cjkLines.length) {
                 result[seg.id] = cjkLines[cjkIdx++];
             }
         }
@@ -432,6 +449,46 @@ function parseNumberedTranslations(raw, segments, nativeLang) {
     // Fill any remaining with empty string
     for (const seg of segments) {
         if (!result[seg.id]) result[seg.id] = '';
+    }
+
+    return result;
+}
+
+async function translateMissingSegments(missingSegments, allSegments, targetLang, nativeLang, settings, context = []) {
+    const tName = LANG_NAMES[targetLang] || targetLang;
+    const nName = LANG_NAMES[nativeLang] || nativeLang;
+    const blockLines = allSegments.map(s => `[${s.id}] ${s.text}`).join('\n');
+    const contextBlock = buildRecentContextBlock(context);
+    const result = {};
+
+    for (const segment of missingSegments) {
+        const system = `You are an expert subtitle translator (${tName} to ${nName}).
+Use neighboring subtitle lines only as context.
+Translate ONLY the requested line into natural spoken ${nName}.
+The requested line may be only a fragment.
+Do NOT complete the sentence.
+Do NOT add information from neighboring lines.
+    Do NOT summarize or omit concrete nouns, list items, numbers, or entities from the requested line.
+Output ONLY the translation text for that single line.`;
+
+        const userMsg = `${contextBlock}
+Subtitle block:
+${blockLines}
+
+    Requested line: [${segment.id}] ${segment.text}
+    ${segment.prevText ? `Previous source line: ${segment.prevText}\n` : ''}${segment.nextText ? `Next source line: ${segment.nextText}` : ''}`;
+
+        let rawOutput;
+        if (settings.aiProvider === 'local') {
+            rawOutput = await fetchOllama(`${system}\n\n${userMsg}`, settings, 220);
+        } else {
+            rawOutput = await fetchOpenAI(system, userMsg, settings, 260);
+        }
+
+        const translation = normalizeTranslationText(extractFinalTranslation(rawOutput || '', nativeLang) || rawOutput || '');
+        if (translation) {
+            result[segment.id] = translation;
+        }
     }
 
     return result;

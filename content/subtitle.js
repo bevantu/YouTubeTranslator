@@ -32,6 +32,12 @@ const SubtitleManager = {
     timeupdateHandler: null,
     contextBuffer: [],   // last 8 translated subtitles for context window
     logBuffer: new Map(), // map of context -> {timeMs, translated}
+    translationBlocks: [],
+    pendingBlockTranslations: new Map(),
+    warmupTimerId: null,
+    currentCaptionFingerprint: '',
+    currentCaptionMeta: null,
+    debugEvents: [],
     preTranslating: false,
 
     // ── Init ──────────────────────────────────────────────────────────────────
@@ -76,11 +82,21 @@ const SubtitleManager = {
      * @param {string} url      - Original request URL (used to detect format)
      */
     async loadTimedText(rawText, url) {
+        const requestMeta = this.extractTimedTextMeta(url);
+        if (this.settings.autoTranslate && this.settings.useAITranslation && requestMeta.tlang) {
+            this.logDebug('timedtext-ignore-ai-translated-track', {
+                lang: requestMeta.lang,
+                tlang: requestMeta.tlang,
+                fmt: requestMeta.fmt
+            });
+            return;
+        }
+
         let isJson3 = (url && url.includes('fmt=json3')) || (rawText.startsWith('{') && rawText.includes('events'));
         if (!isJson3) {
             // Fallback: XML timedtext format
             const entries = this.parseXML(rawText);
-            if (entries.length) this._setupCaptions(entries);
+            if (entries.length) this._setupCaptions(entries, requestMeta);
             return;
         }
 
@@ -120,24 +136,54 @@ const SubtitleManager = {
         }
 
         const entries = this.parseJSON3(baseJson, transJson);
-        if (entries.length) this._setupCaptions(entries);
+        if (entries.length) this._setupCaptions(entries, requestMeta);
     },
 
-    _setupCaptions(entries) {
+    _setupCaptions(entries, requestMeta = null) {
+        const fingerprint = this.buildCaptionFingerprint(entries, requestMeta);
+        if (fingerprint && fingerprint === this.currentCaptionFingerprint) {
+            this.logDebug('caption-setup-skip-duplicate', {
+                entries: entries.length,
+                lang: requestMeta?.lang || '',
+                fmt: requestMeta?.fmt || ''
+            });
+            return;
+        }
+
         console.log(`[YT Bilingual] Loaded ${entries.length} caption entries`);
+        this.logDebug('caption-setup-accepted', {
+            entries: entries.length,
+            lang: requestMeta?.lang || '',
+            fmt: requestMeta?.fmt || '',
+            firstStartMs: entries[0]?.startMs ?? null,
+            lastStartMs: entries[entries.length - 1]?.startMs ?? null
+        });
+
         // Cancel any previous pre-translation run
         this.preTranslating = false;
+        if (this.warmupTimerId) {
+            clearTimeout(this.warmupTimerId);
+            this.warmupTimerId = null;
+        }
         this.captions = entries;
         this.lastRenderedText = '';
         this.translationAbortKey++;
         this.contextBuffer = [];
+        this.translationBlocks = this.collectTranslationBlocks(entries);
+        this.pendingBlockTranslations.clear();
+        this.currentCaptionFingerprint = fingerprint;
+        this.currentCaptionMeta = requestMeta;
 
         // Hide YouTube's own caption layer
         this.hideNativeCaptions(true);
 
         // Start background AI pre-translation with warmup phase
         if (this.settings.autoTranslate && this.settings.useAITranslation) {
-            setTimeout(() => this.warmupAndTranslate(), 500);
+            const runKey = this.translationAbortKey;
+            this.warmupTimerId = setTimeout(() => {
+                this.warmupTimerId = null;
+                this.warmupAndTranslate(runKey);
+            }, 500);
         }
     },
 
@@ -146,10 +192,18 @@ const SubtitleManager = {
      * show progress overlay, then resume and continue pre-translating the rest.
      * This ensures ALL displayed subtitles are high-quality (TRR).
      */
-    async warmupAndTranslate() {
+    async warmupAndTranslate(runKey = this.translationAbortKey) {
+        if (runKey !== this.translationAbortKey) return;
+
         const WARMUP_COUNT = 8;
         const video = document.querySelector('video');
         const wasPlaying = video && !video.paused;
+        this.logDebug('warmup-start', {
+            runKey,
+            captions: this.captions.length,
+            blocks: this.translationBlocks.length,
+            wasPlaying
+        });
 
         if (video && !video.paused) {
             video.pause();
@@ -158,48 +212,46 @@ const SubtitleManager = {
         this.showWarmupOverlay(0, Math.min(WARMUP_COUNT, this.captions.length));
 
         this.preTranslating = true;
-        let translated = 0;
         const total = Math.min(WARMUP_COUNT, this.captions.length);
+        let translated = this.captions
+            .slice(0, total)
+            .filter(c => c.translation !== null && c.translation !== '__pending__')
+            .length;
+        const seenBlocks = new Set();
 
-        const BATCH_SIZE = 3;
-        let i = 0;
-        while (i < total && this.preTranslating) {
-            const batch = [];
-            while (batch.length < BATCH_SIZE && i < total) {
-                const entry = this.captions[i];
-                if (entry.translation === null) {
-                    for (const sibling of this.captions) {
-                        if (sibling.translateContext === entry.translateContext && sibling.translation === null) {
-                            sibling.translation = '__pending__';
-                        }
-                    }
-                    batch.push(entry);
-                }
-                i++;
+        for (let i = 0; i < total && this.preTranslating; i++) {
+            if (runKey !== this.translationAbortKey) {
+                this.logDebug('warmup-abort-stale', { runKey, currentRunKey: this.translationAbortKey, index: i });
+                return;
             }
-            if (!batch.length) continue;
 
-            const ctx = this.contextBuffer.slice(-3);
-            await Promise.allSettled(batch.map(async (entry) => {
-                let resolvedCount = 0;
-                try {
-                    await this._translateBlock(entry.translateContext, ctx);
-                    for (const sibling of this.captions) {
-                        if (sibling.translateContext === entry.translateContext && sibling.startMs <= this.captions[total - 1].endMs) {
-                            resolvedCount++;
-                        }
-                    }
-                } catch (err) {
-                    console.warn('[YT Bilingual] Warmup translate failed:', err.message);
-                    for (const s of this.captions) {
-                        if (s.translateContext === entry.translateContext && s.translation === '__pending__') {
-                            s.translation = '';
-                        }
-                    }
-                }
-                translated += resolvedCount || 1;
-                this.showWarmupOverlay(Math.min(translated, total), total);
-            }));
+            const entry = this.captions[i];
+            if (!entry || seenBlocks.has(entry.translateBlockId)) continue;
+            seenBlocks.add(entry.translateBlockId);
+
+            if (entry.translation !== null && entry.translation !== '__pending__') {
+                continue;
+            }
+
+            this.markBlockPending(entry.translateBlockId);
+
+            try {
+                await this._translateBlock(entry.translateBlockId);
+            } catch (err) {
+                console.warn('[YT Bilingual] Warmup translate failed:', err.message);
+                this.clearBlockPending(entry.translateBlockId, '');
+            }
+
+            translated = this.captions
+                .slice(0, total)
+                .filter(c => c.translation !== null && c.translation !== '__pending__')
+                .length;
+            this.showWarmupOverlay(Math.min(translated, total), total);
+        }
+
+        if (runKey !== this.translationAbortKey) {
+            this.logDebug('warmup-abort-after-loop', { runKey, currentRunKey: this.translationAbortKey });
+            return;
         }
 
         this.hideWarmupOverlay();
@@ -208,7 +260,8 @@ const SubtitleManager = {
         }
 
         console.log(`[YT Bilingual] Warmup complete (${translated}/${total}), resuming playback`);
-        this.startPreTranslation(total);
+        this.logDebug('warmup-complete', { runKey, translated, total });
+        this.startPreTranslation(total, runKey);
     },
 
     /**
@@ -259,53 +312,50 @@ const SubtitleManager = {
      * Uses 'quality' mode (Translate-Reflect-Refine) since we have time.
      * @param {number} startFrom - Index to start from (after warmup)
      */
-    async startPreTranslation(startFrom = 0) {
+    async startPreTranslation(startFrom = 0, runKey = this.translationAbortKey) {
+        if (runKey !== this.translationAbortKey) return;
         this.preTranslating = true;
         console.log(`[YT Bilingual] Background pre-translation from index ${startFrom}`);
-        const BATCH_SIZE = 3;
+        this.logDebug('pretranslate-start', { runKey, startFrom });
+        const seenBlocks = new Set();
 
         let i = startFrom;
         while (i < this.captions.length && this.preTranslating) {
-            const batch = [];
-            while (batch.length < BATCH_SIZE && i < this.captions.length) {
-                const entry = this.captions[i];
-                if (entry.translation === null) {
-                    // Lock all siblings in the same block
-                    for (const sibling of this.captions) {
-                        if (sibling.translateContext === entry.translateContext && sibling.translation === null) {
-                            sibling.translation = '__pending__';
-                        }
-                    }
-                    batch.push(entry);
-                }
-                i++;
+            if (runKey !== this.translationAbortKey) {
+                this.logDebug('pretranslate-abort-stale', { runKey, currentRunKey: this.translationAbortKey, index: i });
+                return;
             }
-            if (!batch.length) continue;
 
-            const ctx = this.contextBuffer.slice(-3);
-            await Promise.allSettled(batch.map(async (entry) => {
-                try {
-                    await this._translateBlock(entry.translateContext, ctx);
+            const entry = this.captions[i];
+            i++;
 
-                    // Re-render current if it was updated
-                    const current = this.captions.find(c => c.text === this.lastRenderedText && c.translateContext === entry.translateContext);
-                    if (current && current.translation && current.translation !== '__pending__') {
-                        this.renderSubtitle(current.text, current.translation, false);
-                    }
-                } catch (err) {
-                    console.warn('[YT Bilingual] Pre-translate failed:', err.message);
-                    for (const s of this.captions) {
-                        if (s.translateContext === entry.translateContext && s.translation === '__pending__') {
-                            s.translation = '';
-                        }
-                    }
+            if (!entry || seenBlocks.has(entry.translateBlockId)) continue;
+            seenBlocks.add(entry.translateBlockId);
+
+            if (entry.translation !== null && entry.translation !== '__pending__') {
+                continue;
+            }
+
+            this.markBlockPending(entry.translateBlockId);
+
+            try {
+                await this._translateBlock(entry.translateBlockId);
+
+                // Re-render current if it was updated
+                const current = this.captions.find(c => c.text === this.lastRenderedText && c.translateBlockId === entry.translateBlockId);
+                if (current && current.translation && current.translation !== '__pending__') {
+                    this.renderSubtitle(current.text, current.translation, false);
                 }
-            }));
+            } catch (err) {
+                console.warn('[YT Bilingual] Pre-translate failed:', err.message);
+                this.clearBlockPending(entry.translateBlockId, '');
+            }
 
             await new Promise(r => setTimeout(r, 10));
         }
         this.preTranslating = false;
         console.log('[YT Bilingual] Pre-translation complete');
+        this.logDebug('pretranslate-complete', { runKey });
     },
 
     /**
@@ -337,7 +387,9 @@ const SubtitleManager = {
                 endMs: ev.tStartMs + ev.dDurationMs,
                 text,
                 translation: transMap.get(ev.tStartMs) || null,
-                translateContext: ''
+                translateContext: '',
+                translateBlockId: '',
+                translateBlockIndex: -1
             });
         }
         if (!raw.length) return [];
@@ -405,10 +457,13 @@ const SubtitleManager = {
             if (evTrans) prevTransText = evTrans;
         }
 
-        // Step 5: Merge atoms into longer sentence-like segments (~40-80 chars)
+        // Step 5: Merge atoms into display segments.
+        // Prefer complete semantic chunks over short fragments like
+        // "They" / "and absolutely" that force the translator to look ahead.
         const MIN_SEGMENT_CHARS = 35;
-        const TARGET_SEGMENT_CHARS = 60;
-        const MAX_SEGMENT_CHARS = 90;
+        const TARGET_SEGMENT_CHARS = 72;
+        const SOFT_MAX_SEGMENT_CHARS = 110;
+        const HARD_MAX_SEGMENT_CHARS = 150;
         const merged = [];
         let segText = '';
         let segTrans = '';
@@ -419,25 +474,16 @@ const SubtitleManager = {
             const atom = atoms[i];
             const gap = segText ? (atom.startMs - segEnd) : 0;
 
-            let shouldBreak = false;
-            if (segText) {
-                if (gap > 600) shouldBreak = true;
-                const trimmed = segText.trim();
-                if (trimmed.match(/[.!?。！？]$/) && !trimmed.match(/\b(Mr|Mrs|Ms|Dr|Vs)\.$/i) && segText.length >= MIN_SEGMENT_CHARS) {
-                    shouldBreak = true;
-                }
-                if ((segText + ' ' + atom.newText).length > MAX_SEGMENT_CHARS && segText.length >= MIN_SEGMENT_CHARS) {
-                    shouldBreak = true;
-                }
-            }
-
-            if (shouldBreak && segText) {
+            if (segText && gap > 600) {
                 merged.push({
                     startMs: segStart,
                     endMs: segEnd,
                     text: segText.trim(),
                     translation: segTrans.trim() || null,
-                    translateContext: ''
+                    displayBreakReason: 'gap',
+                    translateContext: '',
+                    translateBlockId: '',
+                    translateBlockIndex: -1
                 });
                 segText = '';
                 segTrans = '';
@@ -453,19 +499,76 @@ const SubtitleManager = {
             }
             segEnd = atom.endMs;
 
-            if (segText.length >= TARGET_SEGMENT_CHARS) {
-                const trimmed = segText.trim();
-                if (trimmed.match(/[,;:，；：]$/) || trimmed.match(/[.!?。！？]$/)) {
-                    merged.push({
-                        startMs: segStart,
-                        endMs: segEnd,
-                        text: trimmed,
-                        translation: segTrans.trim() || null,
-                        translateContext: ''
-                    });
-                    segText = '';
-                    segTrans = '';
-                }
+            const trimmed = segText.trim();
+            const nextAtom = atoms[i + 1] || null;
+            const nextStartsContinuation = nextAtom ? this.startsWithContinuationWord(nextAtom.newText) : false;
+            const safeSentenceBoundary = this.endsWithSentenceBoundary(trimmed);
+            const safeSoftBoundary = this.canBreakDisplaySegment(trimmed) && !nextStartsContinuation;
+            const hitSoftTarget = trimmed.length >= TARGET_SEGMENT_CHARS;
+            const hitSoftMax = trimmed.length >= SOFT_MAX_SEGMENT_CHARS;
+            const hitHardMax = trimmed.length >= HARD_MAX_SEGMENT_CHARS;
+
+            if (safeSentenceBoundary && trimmed.length >= MIN_SEGMENT_CHARS) {
+                merged.push({
+                    startMs: segStart,
+                    endMs: segEnd,
+                    text: trimmed,
+                    translation: segTrans.trim() || null,
+                    displayBreakReason: 'sentence',
+                    translateContext: '',
+                    translateBlockId: '',
+                    translateBlockIndex: -1
+                });
+                segText = '';
+                segTrans = '';
+                continue;
+            }
+
+            if (hitSoftMax && safeSoftBoundary) {
+                merged.push({
+                    startMs: segStart,
+                    endMs: segEnd,
+                    text: trimmed,
+                    translation: segTrans.trim() || null,
+                    displayBreakReason: 'soft',
+                    translateContext: '',
+                    translateBlockId: '',
+                    translateBlockIndex: -1
+                });
+                segText = '';
+                segTrans = '';
+                continue;
+            }
+
+            if (hitSoftTarget && nextAtom && (atom.endMs < nextAtom.startMs) && safeSoftBoundary) {
+                merged.push({
+                    startMs: segStart,
+                    endMs: segEnd,
+                    text: trimmed,
+                    translation: segTrans.trim() || null,
+                    displayBreakReason: 'soft-gap',
+                    translateContext: '',
+                    translateBlockId: '',
+                    translateBlockIndex: -1
+                });
+                segText = '';
+                segTrans = '';
+                continue;
+            }
+
+            if (hitHardMax) {
+                merged.push({
+                    startMs: segStart,
+                    endMs: segEnd,
+                    text: trimmed,
+                    translation: segTrans.trim() || null,
+                    displayBreakReason: 'hard-limit',
+                    translateContext: '',
+                    translateBlockId: '',
+                    translateBlockIndex: -1
+                });
+                segText = '';
+                segTrans = '';
             }
         }
         if (segText.trim()) {
@@ -474,7 +577,10 @@ const SubtitleManager = {
                 endMs: segEnd,
                 text: segText.trim(),
                 translation: segTrans.trim() || null,
-                translateContext: ''
+                displayBreakReason: 'tail',
+                translateContext: '',
+                translateBlockId: '',
+                translateBlockIndex: -1
             });
         }
 
@@ -489,6 +595,10 @@ const SubtitleManager = {
         // Step 7: Group merged segments into context blocks for translation.
         // We group consecutive segments and build the full sentence context
         // to send to the LLM for better translation quality.
+        const SOFT_MAX_BLOCK_CHARS = 260;
+        const HARD_MAX_BLOCK_CHARS = 360;
+        const SOFT_MAX_BLOCK_SEGMENTS = 3;
+        const HARD_MAX_BLOCK_SEGMENTS = 4;
         let currentBlock = [];
         const blocks = [];
 
@@ -500,15 +610,26 @@ const SubtitleManager = {
                 const prev = currentBlock[currentBlock.length - 1];
                 const gap = curr.startMs - prev.endMs;
                 const prevText = prev.text.trim();
-                const endedSentence = prevText.match(/[.!?。！？]$/) && !prevText.match(/\b(Mr|Mrs|Ms|Dr|Vs)\.$/i);
+                const endedSentence = this.endsWithSentenceBoundary(prevText);
+                const forcedDisplayContinuation = prev.displayBreakReason === 'hard-limit' && !endedSentence;
+                const nextStartsContinuation = this.startsWithContinuationWord(curr.text);
+                const requiresLocalJoin = forcedDisplayContinuation || nextStartsContinuation;
 
                 // Start new block on gap or sentence boundary
                 if (gap > 600 || endedSentence) {
                     newBlock = true;
                 }
-                // Also break if block is getting very long (prevent sending huge context to LLM)
                 const blockText = currentBlock.map(s => s.text).join(' ') + ' ' + curr.text;
-                if (blockText.length > 300) {
+                if (
+                    (blockText.length > SOFT_MAX_BLOCK_CHARS || currentBlock.length >= SOFT_MAX_BLOCK_SEGMENTS)
+                    && !requiresLocalJoin
+                ) {
+                    newBlock = true;
+                }
+
+                // Absolute cap: even for continuation chains, do not let a block
+                // grow too large or the local model starts drifting across lines.
+                if (blockText.length > HARD_MAX_BLOCK_CHARS || currentBlock.length >= HARD_MAX_BLOCK_SEGMENTS) {
                     newBlock = true;
                 }
             }
@@ -522,10 +643,20 @@ const SubtitleManager = {
         if (currentBlock.length > 0) blocks.push(currentBlock);
 
         // Assign translateContext for each block
-        for (const block of blocks) {
+        for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
+            const block = blocks[blockIndex];
             const blockText = block.map(s => s.text).join(' ');
+            const blockId = `block_${blockIndex}_${block[0].startMs}_${block[block.length - 1].endMs}`;
+            this.logDebug('translation-block-grouped', {
+                blockId,
+                blockIndex,
+                segmentCount: block.length,
+                breakReasons: block.map(seg => seg.displayBreakReason || '')
+            });
             for (const seg of block) {
                 seg.translateContext = blockText;
+                seg.translateBlockId = blockId;
+                seg.translateBlockIndex = blockIndex;
             }
         }
 
@@ -539,7 +670,7 @@ const SubtitleManager = {
         try {
             const parser = new DOMParser();
             const doc = parser.parseFromString(xml, 'text/xml');
-            const sentences = Array.from(doc.querySelectorAll('text')).map(el => {
+            const sentences = Array.from(doc.querySelectorAll('text')).map((el, index) => {
                 const start = parseFloat(el.getAttribute('start') || '0') * 1000;
                 const dur = parseFloat(el.getAttribute('dur') || '2') * 1000;
                 const text = el.textContent.trim();
@@ -548,7 +679,9 @@ const SubtitleManager = {
                     endMs: start + dur,
                     text: text,
                     translation: null,
-                    translateContext: text
+                    translateContext: text,
+                    translateBlockId: `xml_${index}_${Math.round(start)}_${Math.round(start + dur)}`,
+                    translateBlockIndex: index
                 };
             }).filter(e => e.text);
 
@@ -615,27 +748,17 @@ const SubtitleManager = {
         // Request translation only once per entry.
         // Use '__pending__' sentinel to prevent duplicate in-flight requests.
         if (needsTranslation) {
-            // Lock ALL siblings so they don't trigger duplicate parallel requests
-            for (const sibling of this.captions) {
-                if (sibling.translateContext === entry.translateContext && sibling.translation === null) {
-                    sibling.translation = '__pending__';
-                }
-            }
+            this.markBlockPending(entry.translateBlockId);
 
-            const recentContext = this.contextBuffer.slice(-5);
-            this._translateBlock(entry.translateContext, recentContext).then(() => {
+            this._translateBlock(entry.translateBlockId).then(() => {
                 // Re-render current segment with its translation
-                const current = this.captions.find(c => c.text === this.lastRenderedText && c.translateContext === entry.translateContext);
+                const current = this.captions.find(c => c.text === this.lastRenderedText && c.translateBlockId === entry.translateBlockId);
                 if (current && current.translation && current.translation !== '__pending__') {
                     this.renderSubtitle(current.text, current.translation, false);
                 }
             }).catch(err => {
                 console.error('[YT Bilingual] Translation error:', err);
-                for (const s of this.captions) {
-                    if (s.translateContext === entry.translateContext && s.translation === '__pending__') {
-                        s.translation = '';
-                    }
-                }
+                this.clearBlockPending(entry.translateBlockId, '');
             });
         }
     },
@@ -803,6 +926,10 @@ const SubtitleManager = {
 
     destroy() {
         this.preTranslating = false; // cancel any ongoing pre-translation loop
+        if (this.warmupTimerId) {
+            clearTimeout(this.warmupTimerId);
+            this.warmupTimerId = null;
+        }
         if (this.rafId) {
             cancelAnimationFrame(this.rafId);
             this.rafId = null;
@@ -812,8 +939,191 @@ const SubtitleManager = {
         this.captions = [];
         this.lastRenderedText = '';
         this.contextBuffer = [];
+        this.translationBlocks = [];
+        this.pendingBlockTranslations.clear();
+        this.currentCaptionFingerprint = '';
+        this.currentCaptionMeta = null;
+        this.debugEvents = [];
         this.logBuffer.clear();
         this.hideNativeCaptions(false);
+    },
+
+    extractTimedTextMeta(url) {
+        if (!url) return { url: '', lang: '', tlang: '', kind: '', name: '', vssId: '', fmt: '' };
+
+        try {
+            const parsed = new URL(url.startsWith('/') ? window.location.origin + url : url);
+            return {
+                url: parsed.toString(),
+                lang: parsed.searchParams.get('lang') || '',
+                tlang: parsed.searchParams.get('tlang') || '',
+                kind: parsed.searchParams.get('kind') || '',
+                name: parsed.searchParams.get('name') || '',
+                vssId: parsed.searchParams.get('vssid') || '',
+                fmt: parsed.searchParams.get('fmt') || ''
+            };
+        } catch {
+            return { url, lang: '', tlang: '', kind: '', name: '', vssId: '', fmt: '' };
+        }
+    },
+
+    buildCaptionFingerprint(entries, requestMeta = null) {
+        if (!entries || !entries.length) return '';
+
+        const first = entries[0];
+        const last = entries[entries.length - 1];
+        return [
+            requestMeta?.lang || '',
+            requestMeta?.tlang || '',
+            requestMeta?.kind || '',
+            requestMeta?.vssId || '',
+            entries.length,
+            first.startMs,
+            first.text,
+            last.startMs,
+            last.text
+        ].join('|');
+    },
+
+    logDebug(event, details = {}) {
+        if (!this.settings?.enableLogging) return;
+
+        const ENABLED_EVENTS = new Set([
+            'timedtext-ignore-ai-translated-track',
+            'caption-setup-skip-duplicate',
+            'caption-setup-accepted',
+            'warmup-start',
+            'warmup-abort-stale',
+            'warmup-abort-after-loop',
+            'warmup-complete',
+            'pretranslate-start',
+            'pretranslate-abort-stale',
+            'pretranslate-complete',
+            'translation-block-grouped',
+            'block-translate-start',
+            'block-translate-finish'
+        ]);
+
+        if (!ENABLED_EVENTS.has(event)) return;
+
+        const stamp = new Date().toISOString();
+        const safeDetails = JSON.stringify(details, (_, value) => {
+            if (typeof value === 'string' && value.length > 220) {
+                return `${value.slice(0, 220)}...`;
+            }
+            return value;
+        });
+        this.debugEvents.push(`${stamp} ${event} ${safeDetails}`);
+        if (this.debugEvents.length > 400) {
+            this.debugEvents.shift();
+        }
+    },
+
+    endsWithSentenceBoundary(text) {
+        const trimmed = (text || '').trim();
+        return /[.!?。！？]$/.test(trimmed) && !/\b(Mr|Mrs|Ms|Dr|Vs)\.$/i.test(trimmed);
+    },
+
+    endsWithWeakBoundary(text) {
+        const trimmed = (text || '').trim();
+        return /[,;:，；：]$/.test(trimmed);
+    },
+
+    endsWithContinuationWord(text) {
+        const trimmed = (text || '').trim();
+        if (!trimmed) return false;
+
+        const match = trimmed.match(/([A-Za-z']+)\W*$/);
+        const lastWord = (match?.[1] || '').toLowerCase();
+        if (!lastWord) return false;
+
+        const CONTINUATION_WORDS = new Set([
+            'a', 'an', 'the', 'and', 'or', 'but', 'so', 'because', 'if', 'then', 'than',
+            'to', 'of', 'for', 'with', 'at', 'by', 'from', 'in', 'on', 'into', 'onto',
+            'about', 'as', 'like', 'through', 'over', 'under', 'between', 'without',
+            'within', 'up', 'down', 'off', 'out', 'around', 'that', 'which', 'who',
+            'whom', 'whose', 'when', 'where', 'while', 'they', 'we', 'you', 'he', 'she',
+            'it', 'i', 'this', 'these', 'those', 'my', 'your', 'his', 'her', 'our',
+            'their', 'its', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'do',
+            'does', 'did', 'have', 'has', 'had', 'will', 'would', 'can', 'could',
+            'should', 'may', 'might', 'must', 'just', 'really', 'absolutely', 'basically',
+            'actually', 'simply', 'well'
+        ]);
+
+        return CONTINUATION_WORDS.has(lastWord);
+    },
+
+    startsWithContinuationWord(text) {
+        const trimmed = (text || '').trim();
+        if (!trimmed) return false;
+
+        const match = trimmed.match(/^([A-Za-z']+)/);
+        const firstWord = (match?.[1] || '').toLowerCase();
+        if (!firstWord) return false;
+
+        const START_CONTINUATION_WORDS = new Set([
+            'and', 'or', 'but', 'so', 'because', 'that', 'which', 'who', 'whom', 'whose',
+            'when', 'where', 'while', 'if', 'then', 'than', 'to', 'of', 'for', 'with',
+            'at', 'by', 'from', 'in', 'on', 'into', 'about', 'as', 'like', 'through',
+            'over', 'under', 'between', 'without', 'within', 'up', 'down', 'off', 'out',
+            'around', 'nothing', 'nor', 'and', 'or', 'but'
+        ]);
+
+        return START_CONTINUATION_WORDS.has(firstWord);
+    },
+
+    canBreakDisplaySegment(text) {
+        const trimmed = (text || '').trim();
+        if (!trimmed) return false;
+        if (this.endsWithSentenceBoundary(trimmed)) return true;
+        if (this.endsWithContinuationWord(trimmed)) return false;
+        return this.endsWithWeakBoundary(trimmed);
+    },
+
+    collectTranslationBlocks(entries) {
+        const byId = new Map();
+        for (const entry of entries) {
+            if (!entry.translateBlockId) continue;
+            if (!byId.has(entry.translateBlockId)) {
+                byId.set(entry.translateBlockId, {
+                    id: entry.translateBlockId,
+                    index: entry.translateBlockIndex,
+                    startMs: entry.startMs,
+                    original: [],
+                    translated: ''
+                });
+            }
+            byId.get(entry.translateBlockId).original.push(entry.text);
+        }
+        return Array.from(byId.values())
+            .sort((a, b) => a.index - b.index)
+            .map(block => ({ ...block, original: block.original.join(' ') }));
+    },
+
+    getBlockEntries(blockId) {
+        return this.captions.filter(c => c.translateBlockId === blockId);
+    },
+
+    markBlockPending(blockId) {
+        for (const sibling of this.getBlockEntries(blockId)) {
+            if (sibling.translation === null) sibling.translation = '__pending__';
+        }
+    },
+
+    clearBlockPending(blockId, fallback = '') {
+        for (const sibling of this.getBlockEntries(blockId)) {
+            if (sibling.translation === '__pending__') sibling.translation = fallback;
+        }
+    },
+
+    getContextForBlock(blockIndex, limit = 5) {
+        return this.translationBlocks
+            .filter(block => block.index < blockIndex && block.translated)
+            .slice(-limit)
+            .map(block => ({
+                original: block.original,
+                translated: block.translated
+            }));
     },
 
     // ── Block Translation (AI-aligned) ─────────────────────────────────────────
@@ -823,40 +1133,86 @@ const SubtitleManager = {
      * AI sees each segment as a numbered line and returns per-segment translations.
      * This guarantees perfect Chinese-English alignment.
      */
-    async _translateBlock(translateContext, context) {
-        const siblings = this.captions.filter(c => c.translateContext === translateContext);
-        if (!siblings.length) return;
-
-        // Build numbered segments for the AI
-        const segments = siblings.map((s, idx) => ({
-            id: idx + 1,
-            text: s.text
-        }));
-
-        const result = await TranslatorService.translateBlock(
-            segments,
-            this.settings.targetLanguage,
-            this.settings.nativeLanguage,
-            this.settings,
-            context
-        );
-
-        // Assign translations by ID
-        let anyTranslated = false;
-        for (let idx = 0; idx < siblings.length; idx++) {
-            const id = idx + 1;
-            const trans = result[id] || '';
-            siblings[idx].translation = trans;
-            if (trans) anyTranslated = true;
+    async _translateBlock(blockId) {
+        if (!blockId) return;
+        if (this.pendingBlockTranslations.has(blockId)) {
+            return this.pendingBlockTranslations.get(blockId);
         }
 
-        // Update context buffer and log
-        if (anyTranslated) {
+        const work = (async () => {
+            const siblings = this.getBlockEntries(blockId);
+            if (!siblings.length) return;
+
+            const alreadyResolved = siblings.every(s => s.translation !== null && s.translation !== '__pending__');
+            if (alreadyResolved) return;
+
+            const segments = siblings.map((s, idx) => {
+                const captionIndex = this.captions.indexOf(s);
+                const prevEntry = captionIndex > 0 ? this.captions[captionIndex - 1] : null;
+                const nextEntry = captionIndex >= 0 && captionIndex < this.captions.length - 1
+                    ? this.captions[captionIndex + 1]
+                    : null;
+
+                return {
+                    id: idx + 1,
+                    text: s.text,
+                    prevText: prevEntry?.text || '',
+                    nextText: nextEntry?.text || '',
+                    displayBreakReason: s.displayBreakReason || ''
+                };
+            });
+            const context = this.getContextForBlock(siblings[0].translateBlockIndex, 5);
+            this.logDebug('block-translate-start', {
+                blockId,
+                blockIndex: siblings[0].translateBlockIndex,
+                segmentCount: segments.length,
+                contextCount: context.length
+            });
+
+            const result = await TranslatorService.translateBlock(
+                segments,
+                this.settings.targetLanguage,
+                this.settings.nativeLanguage,
+                this.settings,
+                context
+            );
+
+            let anyTranslated = false;
+            for (let idx = 0; idx < siblings.length; idx++) {
+                const id = idx + 1;
+                const trans = result[id] || '';
+                siblings[idx].translation = trans;
+                if (trans) anyTranslated = true;
+            }
+
             const fullOriginal = siblings.map(s => s.text).join(' ');
             const fullTranslated = siblings.map(s => s.translation || '').join('');
-            this.addToLog(fullOriginal, fullTranslated, siblings[0].startMs);
-            this.contextBuffer.push({ original: fullOriginal, translated: fullTranslated });
-            if (this.contextBuffer.length > 8) this.contextBuffer.shift();
+            const blockMeta = this.translationBlocks.find(block => block.id === blockId);
+
+            if (blockMeta) {
+                blockMeta.translated = siblings.every(s => s.translation && s.translation !== '__pending__')
+                    ? fullTranslated
+                    : '';
+            }
+
+            this.logDebug('block-translate-finish', {
+                blockId,
+                resolvedSegments: siblings.filter(s => s.translation && s.translation !== '__pending__').length,
+                segmentCount: siblings.length,
+                translatedChars: fullTranslated.length
+            });
+
+            if (anyTranslated && blockMeta && blockMeta.translated) {
+                this.addToLog(fullOriginal, fullTranslated, siblings[0].startMs);
+                this.contextBuffer = this.getContextForBlock(Number.MAX_SAFE_INTEGER, 8);
+            }
+        })();
+
+        this.pendingBlockTranslations.set(blockId, work);
+        try {
+            await work;
+        } finally {
+            this.pendingBlockTranslations.delete(blockId);
         }
     },
 
@@ -1017,7 +1373,7 @@ const SubtitleManager = {
     },
 
     downloadLog() {
-        if (!this.logBuffer.size) return;
+        if (!this.logBuffer.size && !this.debugEvents.length) return;
 
         const entries = Array.from(this.logBuffer.entries()).map(([original, val]) => ({
             original,
@@ -1028,13 +1384,16 @@ const SubtitleManager = {
 
         const title = document.title.replace(/ - YouTube$/, '') || 'Video Log';
         const header = `Video: ${title}\nURL: ${window.location.href}\nGenerated at: ${new Date().toLocaleString()}\n` + "=".repeat(60) + "\n\n";
-
-        const logText = header + entries.map(item => {
+        const debugHeader = this.debugEvents.length
+            ? '[Debug Trace]\n' + this.debugEvents.join('\n') + '\n\n' + '='.repeat(60) + '\n\n'
+            : '';
+        const translationSection = entries.length ? entries.map(item => {
             const m = Math.floor(item.time / 60000);
             const s = Math.floor((item.time % 60000) / 1000);
             const timeStr = `[${m}:${s.toString().padStart(2, '0')}]`;
             return `${timeStr} ${item.original}\n[${this.settings.nativeLanguage.toUpperCase()}] ${item.translated}\n`;
-        }).join('\n');
+        }).join('\n') : '[No translated subtitle entries recorded]\n';
+        const logText = header + debugHeader + translationSection;
 
         chrome.runtime.sendMessage({
             action: 'downloadLog',
