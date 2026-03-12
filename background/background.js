@@ -84,6 +84,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
+    if (message.action === 'translateWebParagraphs') {
+        handleWebPageTranslate(
+            message.paragraphs, message.targetLang, message.nativeLang,
+            message.settings, message.context || []
+        )
+            .then(result => sendResponse({ success: true, result }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
     if (message.action === 'getDefinition') {
         handleDefinition(message.word, message.context, message.targetLang, message.nativeLang, message.settings)
             .then(result => sendResponse({ success: true, result }))
@@ -392,6 +402,88 @@ ${numberedLines}`;
     if (gotAll) {
         await setCache(cacheKey, result);
     }
+    return result;
+}
+
+// ─── Web Page Paragraph Translation ──────────────────────────────────────────
+
+/**
+ * Translate an array of plain-text web page paragraphs using the AI.
+ * Paragraphs are grouped into batches of up to BATCH_SIZE and translated
+ * with the block-translate prompt so context flows between paragraphs.
+ *
+ * @param {Array<{id:number, text:string}>} paragraphs
+ * @param {string} targetLang  - language of the source text (usually 'en')
+ * @param {string} nativeLang  - target translation language (usually 'zh')
+ * @param {object} settings
+ * @param {Array}  context     - recent translated pairs for continuity
+ * @returns {Object} map of { id: translatedText }
+ */
+async function handleWebPageTranslate(paragraphs, targetLang, nativeLang, settings, context = []) {
+    if (!paragraphs || !paragraphs.length) return {};
+
+    const BATCH_SIZE = 8;
+    const tName = LANG_NAMES[targetLang] || targetLang;
+    const nName = LANG_NAMES[nativeLang] || nativeLang;
+    const result = {};
+
+    // Process in batches
+    for (let i = 0; i < paragraphs.length; i += BATCH_SIZE) {
+        const batch = paragraphs.slice(i, i + BATCH_SIZE);
+
+        // Build a stable cache key
+        const blockText = batch.map(p => `${p.id}:${p.text}`).join('|');
+        const cacheKey = makeCacheKey('wp', blockText, targetLang, nativeLang);
+        const cached = await getCache(cacheKey);
+        if (cached) {
+            Object.assign(result, cached);
+            continue;
+        }
+
+        // Build numbered lines
+        const numberedLines = batch.map(p => `[${p.id}] ${p.text}`).join('\n');
+        const contextBlock = buildRecentContextBlock(context);
+
+        const system = `You are an expert translator (${tName} to ${nName}).
+Translate each numbered paragraph from a web page naturally and faithfully.
+Preserve all details, lists, proper nouns, numbers, and formatting intent.
+Do NOT merge or split items. Keep 1:1 mapping.
+Output ONLY the translations inside <TRANSLATIONS></TRANSLATIONS> tags.
+Format: one line per item, exactly like [1] 翻译内容`;
+
+        const userMsg = `${contextBlock}\nTranslate these paragraphs:\n${numberedLines}`;
+
+        let rawOutput;
+        if (settings.aiProvider === 'local') {
+            rawOutput = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1500);
+        } else {
+            rawOutput = await fetchOpenAI(system, userMsg, settings, 2000);
+        }
+
+        const batchResult = parseNumberedTranslations(rawOutput || '', batch, nativeLang);
+
+        // Fallback for any missing
+        const missing = batch.filter(p => !batchResult[p.id] || !batchResult[p.id].trim());
+        if (missing.length > 0) {
+            const fallbacks = await translateMissingSegments(missing, batch, targetLang, nativeLang, settings, context);
+            Object.assign(batchResult, fallbacks);
+        }
+
+        Object.assign(result, batchResult);
+
+        // Update context for next batch
+        for (const p of batch) {
+            if (batchResult[p.id]) {
+                context.push({ original: p.text.slice(0, 80), translated: batchResult[p.id].slice(0, 80) });
+                if (context.length > 6) context.shift();
+            }
+        }
+
+        // Cache this batch
+        const gotAll = batch.every(p => batchResult[p.id] && batchResult[p.id].length > 0);
+        if (gotAll) await setCache(cacheKey, batchResult);
+    }
+
     return result;
 }
 

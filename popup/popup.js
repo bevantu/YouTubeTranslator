@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const nativeLang = document.getElementById('nativeLanguage');
     const profLevel = document.getElementById('proficiencyLevel');
     const useAITranslation = document.getElementById('useAITranslation');
+    const webPageTranslation = document.getElementById('webPageTranslation');
     const statusSection = document.getElementById('statusSection');
     const learningStat = document.getElementById('learningStat');
     const masteredStat = document.getElementById('masteredStat');
@@ -18,6 +19,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     nativeLang.value = settings.nativeLanguage;
     profLevel.value = settings.proficiencyLevel;
     if (useAITranslation) useAITranslation.checked = settings.useAITranslation;
+    if (webPageTranslation) webPageTranslation.checked = !!settings.webPageTranslation;
 
     updateStatus(settings.enabled);
 
@@ -47,6 +49,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             const newSettings = await StorageHelper.getSettings();
             newSettings.useAITranslation = useAITranslation.checked;
             await StorageHelper.saveSettings(newSettings);
+        });
+    }
+
+    // Event: Webpage Translation toggle
+    if (webPageTranslation) {
+        webPageTranslation.addEventListener('change', async () => {
+            const newSettings = await StorageHelper.getSettings();
+            newSettings.webPageTranslation = webPageTranslation.checked;
+            await StorageHelper.saveSettings(newSettings);
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (tab?.id) {
+                chrome.tabs.sendMessage(tab.id, {
+                    action: 'toggleWebTranslation',
+                    enabled: webPageTranslation.checked
+                }).catch(() => { /* tab may not have content script */ });
+            }
         });
     }
 

@@ -50,6 +50,25 @@
         "content/content.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "exclude_matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*"
+      ],
+      "css": [
+        "content/content.css"
+      ],
+      "js": [
+        "lib/wordlevels.js",
+        "lib/languages.js",
+        "lib/storage.js",
+        "lib/translator.js",
+        "content/wordPopup.js",
+        "content/webPageTranslator.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "action": {
