@@ -47,15 +47,12 @@
         "content/wordPopup.js",
         "content/panel.js",
         "content/subtitle.js",
-        "content/subtitleOptimizer.js",
         "content/content.js"
       ],
       "run_at": "document_idle"
     },
     {
-      "matches": [
-        "<all_urls>"
-      ],
+      "matches": ["<all_urls>"],
       "exclude_matches": [
         "https://www.youtube.com/*",
         "https://youtube.com/*"

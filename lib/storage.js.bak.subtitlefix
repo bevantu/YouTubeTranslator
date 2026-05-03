@@ -9,12 +9,12 @@ const StorageHelper = {
         proficiencyLevel: 'intermediate',
         // AI settings
         useAITranslation: true, // Toggle between AI translation and YouTube's native translation
-        aiProvider: 'local', // 'openai', 'custom', 'local'
+        aiProvider: 'openai', // 'openai', 'custom', 'local'
         apiKey: '',
         apiEndpoint: 'https://api.openai.com/v1/chat/completions',
         apiModel: 'gpt-4o-mini',
         localEndpoint: 'http://localhost:11434/api/generate',
-        localModel: 'qwen2.5:14b',
+        localModel: 'llama3',
         // Display settings
         showPanel: true,
         fontSize: 16,

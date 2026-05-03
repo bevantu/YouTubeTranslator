@@ -879,4 +879,30 @@
   -webkit-backdrop-filter: blur(16px);
   animation: yb-fadeIn 0.3s ease;
   pointer-events: none;
-}
+}
+
+/* === Subtitle Optimizer Patch: readability guardrails === */
+.yb-subtitle-container {
+  width: min(86vw, 1120px);
+  max-width: 92%;
+  bottom: clamp(64px, 10vh, 112px);
+  max-height: 42%;
+}
+
+.yb-subtitle-line {
+  max-width: min(82vw, 1040px);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  text-wrap: balance;
+}
+
+.yb-subtitle-original {
+  -webkit-line-clamp: 2;
+}
+
+.yb-subtitle-translation {
+  -webkit-line-clamp: 2;
+  max-width: min(80vw, 980px);
+}
+

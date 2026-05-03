@@ -41,9 +41,6 @@ chrome.runtime.onInstalled.addListener((details) => {
                         knownWordColor: '#4CAF50',
                         unknownWordColor: '#FF9800',
                         autoTranslate: true,
-                        useAITranslation: true,
-                        enableLogging: true,
-                        webPageTranslation: false,
                         showOriginalSubtitle: true,
                         showTranslatedSubtitle: true
                     }
@@ -71,16 +68,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         handleTranslate(
             message.text, message.targetLang, message.nativeLang,
             message.settings, message.context || [], false, message.mode || 'quality'
-        )
-            .then(result => sendResponse({ success: true, result }))
-            .catch(err => sendResponse({ success: false, error: err.message }));
-        return true;
-    }
-
-    if (message.action === 'translateStructuredBlock') {
-        handleStructuredBlockTranslate(
-            message.segments, message.targetLang, message.nativeLang,
-            message.settings, message.context || []
         )
             .then(result => sendResponse({ success: true, result }))
             .catch(err => sendResponse({ success: false, error: err.message }));
@@ -415,121 +402,6 @@ ${numberedLines}`;
     if (gotAll) {
         await setCache(cacheKey, result);
     }
-    return result;
-}
-
-
-
-// ─── Structured Subtitle Block Translation (stable cue-id JSON) ───────────────
-
-function extractFirstJsonObject(raw) {
-    const text = String(raw || '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
-    const start = text.indexOf('{');
-    if (start < 0) return '';
-
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < text.length; i++) {
-        const ch = text[i];
-        if (escaped) { escaped = false; continue; }
-        if (ch === '\\') { escaped = true; continue; }
-        if (ch === '"') { inString = !inString; continue; }
-        if (inString) continue;
-        if (ch === '{') depth++;
-        if (ch === '}') {
-            depth--;
-            if (depth === 0) return text.slice(start, i + 1);
-        }
-    }
-    return '';
-}
-
-function parseStructuredTranslationJson(raw, segments) {
-    const result = {};
-    const wanted = new Set((segments || []).map(s => String(s.id)));
-
-    try {
-        const jsonText = extractFirstJsonObject(raw);
-        const parsed = JSON.parse(jsonText || raw);
-        const items = Array.isArray(parsed) ? parsed : (parsed.items || parsed.translations || []);
-        for (const item of items) {
-            const id = String(item.id ?? item.cue_id ?? item.cueId ?? '');
-            const translation = normalizeTranslationText(item.translation ?? item.text ?? item.value ?? '');
-            if (wanted.has(id) && translation) result[id] = translation;
-        }
-    } catch {
-        // Regex fallback for models that ignored JSON but preserved ids.
-        const text = String(raw || '').replace(/<TRANSLATIONS>|<\/TRANSLATIONS>/gi, '');
-        for (const segment of segments || []) {
-            const id = String(segment.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const re = new RegExp(`(?:^|\\n)\\s*\\[?${id}\\]?\\s*[:：\\]-]\\s*(.+?)(?=\\n\\s*\\[?[A-Za-z0-9_:-]+\\]?\\s*[:：\\]-]|$)`, 's');
-            const m = text.match(re);
-            if (m) {
-                const translation = normalizeTranslationText(m[1]);
-                if (translation) result[String(segment.id)] = translation;
-            }
-        }
-    }
-
-    for (const segment of segments || []) {
-        if (!result[String(segment.id)]) result[String(segment.id)] = '';
-    }
-    return result;
-}
-
-async function handleStructuredBlockTranslate(segments, targetLang, nativeLang, settings, context = []) {
-    if (!segments || !segments.length) return {};
-
-    const stableText = segments.map(s => `${s.id}:${s.text}`).join('|');
-    const cacheKey = makeCacheKey('sblk', stableText, targetLang, nativeLang);
-    const cached = await getCache(cacheKey);
-    if (cached) return cached;
-
-    const tName = LANG_NAMES[targetLang] || targetLang;
-    const nName = LANG_NAMES[nativeLang] || nativeLang;
-    const contextBlock = buildRecentContextBlock(context);
-
-    const payload = {
-        items: segments.map(s => ({
-            id: String(s.id),
-            current: s.text,
-            prev_source: s.prevText || '',
-            next_source: s.nextText || '',
-            break_reason: s.displayBreakReason || ''
-        }))
-    };
-
-    const system = `You are an expert subtitle translator (${tName} to ${nName}).
-Return JSON only. No markdown. No explanations.
-Schema exactly: {"items":[{"id":"same id from input","translation":"translated subtitle"}]}
-Rules:
-- Return one item for every input id, preserving the exact id string.
-- Translate CURRENT only. PREV_SOURCE and NEXT_SOURCE are context hints only.
-- Do not merge, split, summarize, omit concrete details, or add context-only meaning.
-- Keep each translation concise and natural for on-screen subtitles.
-- If CURRENT is a sentence fragment, keep the translation fragmentary too.`;
-
-    const userMsg = `${contextBlock}\nTranslate this JSON payload:\n${JSON.stringify(payload, null, 2)}`;
-
-    let rawOutput;
-    if (settings.aiProvider === 'local') {
-        rawOutput = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1400);
-    } else {
-        rawOutput = await fetchOpenAI(system, userMsg, settings, 1800);
-    }
-
-    const result = parseStructuredTranslationJson(rawOutput || '', segments);
-
-    for (const segment of segments) {
-        const id = String(segment.id);
-        if (!result[id]) {
-            result[id] = await handleTranslate(segment.text, targetLang, nativeLang, settings, context, false, 'fast');
-        }
-    }
-
-    const gotAll = segments.every(s => result[String(s.id)] && result[String(s.id)].trim());
-    if (gotAll) await setCache(cacheKey, result);
     return result;
 }
 
