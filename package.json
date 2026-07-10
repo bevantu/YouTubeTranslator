@@ -1,0 +1,11 @@
+{
+  "name": "youtube-bilingual-subtitles",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Verification tools for the YouTube Bilingual Subtitles extension",
+  "scripts": {
+    "test": "node --test --test-isolation=none \"tests/*.test.js\"",
+    "check:syntax": "node scripts/check_syntax.js",
+    "check": "npm run check:syntax && npm test"
+  }
+}

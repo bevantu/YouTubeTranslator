@@ -15,10 +15,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         localModel: document.getElementById('localModel'),
         fontSize: document.getElementById('fontSize'),
         fontSizeValue: document.getElementById('fontSizeValue'),
+        subtitlePosition: document.getElementById('subtitlePosition'),
+        backgroundOpacity: document.getElementById('subtitleBackgroundOpacity'),
+        backgroundOpacityValue: document.getElementById('backgroundOpacityValue'),
+        preview: document.getElementById('subtitlePreview'),
         knownColor: document.getElementById('knownWordColor'),
         unknownColor: document.getElementById('unknownWordColor'),
-        showOriginal: document.getElementById('showOriginal'),
-        showTranslation: document.getElementById('showTranslation'),
         autoTranslate: document.getElementById('autoTranslate'),
         enableLogging: document.getElementById('enableLogging'),
         showPanel: document.getElementById('showPanel'),
@@ -30,7 +32,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     // Load settings
-    const settings = await StorageHelper.getSettings();
+    let settings = await StorageHelper.getSettings();
     populateForm(settings);
 
     // Load vocabulary stats
@@ -50,6 +52,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Font size slider
     els.fontSize.addEventListener('input', () => {
         els.fontSizeValue.textContent = els.fontSize.value;
+        updatePreview();
+    });
+    els.backgroundOpacity.addEventListener('input', () => {
+        els.backgroundOpacityValue.textContent = els.backgroundOpacity.value;
+        updatePreview();
+    });
+    [
+        els.fontSize, els.backgroundOpacity, els.subtitlePosition,
+        els.knownColor, els.unknownColor,
+        ...document.querySelectorAll('input[name="subtitleDisplayMode"]')
+    ].forEach(control => {
+        control.addEventListener('input', scheduleDisplaySave);
+        control.addEventListener('change', scheduleDisplaySave);
     });
 
     // Toggle API key visibility
@@ -85,12 +100,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Save settings
     document.getElementById('saveSettings').addEventListener('click', async () => {
-        const newSettings = collectSettings();
-        await StorageHelper.saveSettings(newSettings);
-
-        const msg = els.saveMessage;
-        msg.style.display = 'block';
-        setTimeout(() => { msg.style.display = 'none'; }, 3000);
+        try {
+            settings = await StorageHelper.saveSettings(collectSettings());
+            showSaveMessage('? Settings saved successfully.');
+        } catch (error) {
+            populateForm(settings);
+            showSaveMessage(`Could not save settings: ${error.message}`, true);
+        }
     });
 
     // Export vocabulary
@@ -175,21 +191,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Display settings
         els.fontSize.value = s.fontSize;
         els.fontSizeValue.textContent = s.fontSize;
+        els.subtitlePosition.value = s.subtitlePosition;
+        els.backgroundOpacity.value = Math.round(s.subtitleBackgroundOpacity * 100);
+        els.backgroundOpacityValue.textContent = Math.round(s.subtitleBackgroundOpacity * 100);
         els.knownColor.value = s.knownWordColor;
         els.unknownColor.value = s.unknownWordColor;
-        els.showOriginal.checked = s.showOriginalSubtitle;
-        els.showTranslation.checked = s.showTranslatedSubtitle;
+        const mode = document.querySelector(`input[name="subtitleDisplayMode"][value="${s.subtitleDisplayMode}"]`);
+        if (mode) mode.checked = true;
         els.autoTranslate.checked = s.autoTranslate;
         els.enableLogging.checked = s.enableLogging;
         els.showPanel.checked = s.showPanel;
+        updatePreview();
     }
 
     /**
      * Collect settings from form
      */
     function collectSettings() {
+        const displayMode = document.querySelector('input[name="subtitleDisplayMode"]:checked')?.value || 'bilingual';
         return {
-            enabled: true,
+            ...settings,
             targetLanguage: els.targetLang.value,
             nativeLanguage: els.nativeLang.value,
             proficiencyLevel: els.profLevel.value,
@@ -201,14 +222,69 @@ document.addEventListener('DOMContentLoaded', async () => {
             localEndpoint: els.localEndpoint.value,
             localModel: els.localModel.value,
             showPanel: els.showPanel.checked,
+            subtitleDisplayMode: displayMode,
             fontSize: parseInt(els.fontSize.value),
+            subtitlePosition: els.subtitlePosition.value,
+            subtitleBackgroundOpacity: parseInt(els.backgroundOpacity.value) / 100,
             knownWordColor: els.knownColor.value,
             unknownWordColor: els.unknownColor.value,
             autoTranslate: els.autoTranslate.checked,
             enableLogging: els.enableLogging.checked,
-            showOriginalSubtitle: els.showOriginal.checked,
-            showTranslatedSubtitle: els.showTranslation.checked
+            showOriginalSubtitle: displayMode !== 'translated',
+            showTranslatedSubtitle: displayMode !== 'original'
         };
+    }
+
+    function collectDisplaySettings() {
+        const displayMode = document.querySelector('input[name="subtitleDisplayMode"]:checked')?.value || 'bilingual';
+        return {
+            subtitleDisplayMode: displayMode,
+            showOriginalSubtitle: displayMode !== 'translated',
+            showTranslatedSubtitle: displayMode !== 'original',
+            fontSize: parseInt(els.fontSize.value),
+            subtitlePosition: els.subtitlePosition.value,
+            subtitleBackgroundOpacity: parseInt(els.backgroundOpacity.value) / 100,
+            knownWordColor: els.knownColor.value,
+            unknownWordColor: els.unknownColor.value
+        };
+    }
+
+    let displaySaveTimer = null;
+    let saveMessageTimer = null;
+    function showSaveMessage(message, isError = false, timeout = 3000) {
+        clearTimeout(saveMessageTimer);
+        els.saveMessage.textContent = message;
+        els.saveMessage.classList.toggle('error', isError);
+        els.saveMessage.style.display = 'block';
+        saveMessageTimer = setTimeout(() => {
+            els.saveMessage.style.display = 'none';
+            els.saveMessage.classList.remove('error');
+        }, timeout);
+    }
+
+    function scheduleDisplaySave() {
+        updatePreview();
+        clearTimeout(displaySaveTimer);
+        displaySaveTimer = setTimeout(async () => {
+            try {
+                settings = await StorageHelper.updateSettings(collectDisplaySettings());
+                showSaveMessage('Display changes applied live.', false, 1400);
+            } catch (error) {
+                populateForm(settings);
+                showSaveMessage(`Could not apply display changes: ${error.message}`, true);
+            }
+        }, 150);
+    }
+
+    function updatePreview() {
+        if (!els.preview) return;
+        const mode = document.querySelector('input[name="subtitleDisplayMode"]:checked')?.value || 'bilingual';
+        els.preview.dataset.mode = mode;
+        els.preview.dataset.position = els.subtitlePosition.value;
+        els.preview.style.setProperty('--preview-font-size', `${els.fontSize.value}px`);
+        els.preview.style.setProperty('--preview-bg-opacity', String(parseInt(els.backgroundOpacity.value) / 100));
+        els.preview.style.setProperty('--preview-known-color', els.knownColor.value);
+        els.preview.style.setProperty('--preview-unknown-color', els.unknownColor.value);
     }
 
     /**

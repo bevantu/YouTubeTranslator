@@ -18,6 +18,186 @@ const LANG_NAMES = {
     nl: 'Dutch', sv: 'Swedish', uk: 'Ukrainian', id: 'Indonesian'
 };
 
+const TRANSLATION_RULES_VERSION = '2026-07-10.1';
+const TRANSLATION_CACHE_PREFIX = 'yttr_v2_';
+const TRANSLATION_CACHE_INDEX_KEY = '__yb_translation_cache_index_v2';
+const TRANSLATION_CACHE_MAX_ENTRIES = 400;
+const TRANSLATION_CACHE_MAX_BYTES = 3 * 1024 * 1024;
+const activeTranslationTasks = new Map();
+let translationCacheMutation = Promise.resolve();
+let settingsMutation = Promise.resolve();
+let vocabularyMutation = Promise.resolve();
+
+class TranslationError extends Error {
+    constructor(message, options = {}) {
+        super(message);
+        this.name = 'TranslationError';
+        this.code = options.code || 'TRANSLATION_FAILED';
+        this.retryable = Boolean(options.retryable);
+        this.stale = Boolean(options.stale);
+        this.status = options.status ?? null;
+        this.details = options.details || null;
+    }
+}
+
+function normalizeTranslationError(error, fallbackMessage = 'Translation failed') {
+    if (error instanceof TranslationError) return error;
+    if (error?.name === 'AbortError') {
+        return new TranslationError('Translation request was cancelled.', {
+            code: 'REQUEST_CANCELLED',
+            retryable: false
+        });
+    }
+    return new TranslationError(error?.message || fallbackMessage, {
+        code: error?.code || 'TRANSLATION_FAILED',
+        retryable: Boolean(error?.retryable),
+        stale: Boolean(error?.stale),
+        details: error?.details || null
+    });
+}
+
+function sendTranslationError(sendResponse, error, taskId = null) {
+    const normalized = normalizeTranslationError(error);
+    sendResponse({
+        success: false,
+        error: normalized.message,
+        errorCode: normalized.code,
+        retryable: normalized.retryable,
+        stale: normalized.stale,
+        details: normalized.details,
+        taskId
+    });
+}
+
+function getTaskIdentity(message, sender) {
+    const task = message.task && typeof message.task === 'object' ? message.task : {};
+    const id = message.taskId ?? message.taskGeneration ?? task.id ?? null;
+    if (id === null || id === undefined || id === '') return null;
+    const tabId = sender?.tab?.id ?? 'global';
+    const callerScope = String(message.taskScope ?? message.taskKey ?? task.scope ?? 'translation');
+    return {
+        id: String(id),
+        scope: `${tabId}:${callerScope}`
+    };
+}
+
+function cancelTranslationTasksForSender(sender, requestedScope = '') {
+    const tabId = sender?.tab?.id ?? 'global';
+    const prefix = `${tabId}:`;
+    const exactScope = requestedScope ? `${prefix}${String(requestedScope)}` : '';
+    let cancelled = 0;
+
+    for (const [scope, generation] of activeTranslationTasks.entries()) {
+        if (!scope.startsWith(prefix) || (exactScope && scope !== exactScope)) continue;
+        for (const controller of generation.controllers) controller.abort('translation-session-cancelled');
+        activeTranslationTasks.delete(scope);
+        cancelled++;
+    }
+    return cancelled;
+}
+
+function beginTranslationTask(message, sender) {
+    const identity = getTaskIdentity(message, sender);
+    if (!identity) {
+        return {
+            signal: null,
+            assertCurrent() {},
+            release() {}
+        };
+    }
+
+    let generation = activeTranslationTasks.get(identity.scope);
+    if (!generation || generation.id !== identity.id) {
+        if (generation) {
+            for (const controller of generation.controllers) {
+                controller.abort('stale-translation-task');
+            }
+        }
+        generation = { id: identity.id, controllers: new Set() };
+        activeTranslationTasks.set(identity.scope, generation);
+    }
+
+    const controller = new AbortController();
+    generation.controllers.add(controller);
+
+    const assertCurrent = () => {
+        const current = activeTranslationTasks.get(identity.scope);
+        if (!current || current.id !== identity.id || controller.signal.aborted) {
+            throw new TranslationError('Discarded a stale translation result.', {
+                code: 'STALE_TRANSLATION_TASK',
+                retryable: false,
+                stale: true
+            });
+        }
+    };
+
+    return {
+        taskId: identity.id,
+        taskScope: identity.scope,
+        signal: controller.signal,
+        assertCurrent,
+        release() {
+            generation.controllers.delete(controller);
+            if (generation.controllers.size === 0 && activeTranslationTasks.get(identity.scope) === generation) {
+                activeTranslationTasks.delete(identity.scope);
+            }
+        }
+    };
+}
+
+function runTranslationMessage(message, sender, sendResponse, handler) {
+    const task = beginTranslationTask(message, sender);
+    Promise.resolve()
+        .then(() => handler(task))
+        .then(result => {
+            task.assertCurrent();
+            sendResponse({ success: true, result, taskId: task.taskId || null });
+        })
+        .catch(error => sendTranslationError(sendResponse, error, task.taskId || null))
+        .finally(() => task.release());
+    return true;
+}
+
+function updateStoredSettings(patch = {}) {
+    const operation = settingsMutation.then(() => new Promise((resolve, reject) => {
+        chrome.storage.sync.get('settings', result => {
+            if (chrome.runtime?.lastError) {
+                reject(new Error(chrome.runtime.lastError.message || 'Could not read settings.'));
+                return;
+            }
+            const settings = { ...(result?.settings || {}), ...(patch || {}) };
+            chrome.storage.sync.set({ settings }, () => {
+                if (chrome.runtime?.lastError) reject(new Error(chrome.runtime.lastError.message || 'Could not save settings.'));
+                else resolve(settings);
+            });
+        });
+    }));
+    settingsMutation = operation.catch(() => undefined);
+    return operation;
+}
+
+function updateStoredVocabularyEntry(entry = {}) {
+    const operation = vocabularyMutation.then(async () => {
+        const stored = await storageLocalGet('vocabulary');
+        const vocabulary = { ...(stored.vocabulary || {}) };
+        const word = String(entry.word || '').trim().toLowerCase();
+        const language = String(entry.language || '').trim();
+        if (!word || !language) throw new Error('Word and language are required.');
+        const key = `${language}:${word}`;
+        vocabulary[key] = {
+            word,
+            status: entry.status === 'known' ? 'known' : 'learning',
+            definition: String(entry.definition || ''),
+            language,
+            updatedAt: Date.now()
+        };
+        await storageLocalSet({ vocabulary });
+        return vocabulary[key];
+    });
+    vocabularyMutation = operation.catch(() => undefined);
+    return operation;
+}
+
 // ─── Install / Update ────────────────────────────────────────────────────────
 
 chrome.runtime.onInstalled.addListener((details) => {
@@ -29,19 +209,22 @@ chrome.runtime.onInstalled.addListener((details) => {
                         enabled: true,
                         targetLanguage: 'en',
                         nativeLanguage: 'zh',
-                        proficiencyLevel: 'intermediate',
+                        proficiencyLevel: 'middle',
                         aiProvider: 'local',
                         apiKey: '',
                         apiEndpoint: 'https://api.openai.com/v1/chat/completions',
                         apiModel: 'gpt-4o-mini',
                         localEndpoint: 'http://localhost:11434/api/generate',
                         localModel: 'qwen2.5:14b',
-                        showPanel: true,
+                        showPanel: false,
+                        subtitleDisplayMode: 'bilingual',
                         fontSize: 16,
+                        subtitlePosition: 'bottom',
+                        subtitleBackgroundOpacity: 0.84,
                         knownWordColor: '#4CAF50',
                         unknownWordColor: '#FF9800',
                         autoTranslate: true,
-                        useAITranslation: true,
+                        useAITranslation: false,
                         enableLogging: true,
                         webPageTranslation: false,
                         showOriginalSubtitle: true,
@@ -67,44 +250,52 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
 // ─── Message Router ───────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === 'translate') {
-        handleTranslate(
-            message.text, message.targetLang, message.nativeLang,
-            message.settings, message.context || [], false, message.mode || 'quality'
-        )
-            .then(result => sendResponse({ success: true, result }))
-            .catch(err => sendResponse({ success: false, error: err.message }));
+    if (message.action === 'updateSettings') {
+        updateStoredSettings(message.patch || {})
+            .then(settings => sendResponse({ success: true, settings }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
         return true;
+    }
+
+    if (message.action === 'saveVocabularyEntry') {
+        updateStoredVocabularyEntry(message.entry || {})
+            .then(entry => sendResponse({ success: true, entry }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+        return true;
+    }
+
+    if (message.action === 'cancelTranslationTasks') {
+        const count = cancelTranslationTasksForSender(sender, message.taskScope || '');
+        sendResponse({ success: true, count });
+        return false;
+    }
+
+    if (message.action === 'translate') {
+        return runTranslationMessage(message, sender, sendResponse, task => handleTranslate(
+            message.text, message.targetLang, message.nativeLang,
+            message.settings, message.context || [], false, message.mode || 'quality', task
+        ));
     }
 
     if (message.action === 'translateStructuredBlock') {
-        handleStructuredBlockTranslate(
+        return runTranslationMessage(message, sender, sendResponse, task => handleStructuredBlockTranslate(
             message.segments, message.targetLang, message.nativeLang,
-            message.settings, message.context || []
-        )
-            .then(result => sendResponse({ success: true, result }))
-            .catch(err => sendResponse({ success: false, error: err.message }));
-        return true;
+            message.settings, message.context || [], task
+        ));
     }
 
     if (message.action === 'translateBlock') {
-        handleBlockTranslate(
+        return runTranslationMessage(message, sender, sendResponse, task => handleBlockTranslate(
             message.segments, message.targetLang, message.nativeLang,
-            message.settings, message.context || []
-        )
-            .then(result => sendResponse({ success: true, result }))
-            .catch(err => sendResponse({ success: false, error: err.message }));
-        return true;
+            message.settings, message.context || [], task
+        ));
     }
 
     if (message.action === 'translateWebParagraphs') {
-        handleWebPageTranslate(
+        return runTranslationMessage(message, sender, sendResponse, task => handleWebPageTranslate(
             message.paragraphs, message.targetLang, message.nativeLang,
-            message.settings, message.context || []
-        )
-            .then(result => sendResponse({ success: true, result }))
-            .catch(err => sendResponse({ success: false, error: err.message }));
-        return true;
+            message.settings, message.context || [], task
+        ));
     }
 
     if (message.action === 'getDefinition') {
@@ -118,7 +309,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Remove only translation/definition cache keys, keep settings & vocab
         chrome.storage.local.get(null, (items) => {
             const keysToRemove = Object.keys(items).filter(k =>
-                k.startsWith('tr_') || k.startsWith('def_') || k.startsWith('dict_') || k.startsWith('blk_')
+                k.startsWith('tr_') || k.startsWith('def_') || k.startsWith('dict_') ||
+                k.startsWith('blk_') || k.startsWith('sblk_') || k.startsWith('wp_') ||
+                k.startsWith(TRANSLATION_CACHE_PREFIX) || k === TRANSLATION_CACHE_INDEX_KEY
             );
             if (keysToRemove.length) {
                 chrome.storage.local.remove(keysToRemove, () => {
@@ -158,7 +351,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return true;
         }
         // skipCache=true so we always make a real network request
-        handleTranslate('太棒了，成功了', 'en', 'zh', s, [], true, 'fast')
+        handleTranslate('Great, the connection works.', 'en', 'zh', s, [], true, 'fast')
             .then(result => sendResponse({ success: true, result }))
             .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -269,12 +462,446 @@ function buildRecentContextBlock(context = []) {
     return `\nRecent subtitles for context (do NOT retranslate):\n${lines}\n`;
 }
 
-async function handleTranslate(text, targetLang, nativeLang, settings, context = [], skipCache = false, mode = 'quality') {
+function stableSerialize(value) {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(',')}}`;
+}
+
+function hashStableText(text) {
+    let h1 = 0x811c9dc5;
+    let h2 = 0x9e3779b9;
+    for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        h1 = Math.imul(h1 ^ code, 0x01000193) >>> 0;
+        h2 = Math.imul(h2 ^ code, 0x85ebca6b) >>> 0;
+        h2 = ((h2 << 13) | (h2 >>> 19)) >>> 0;
+    }
+    return `${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}${text.length.toString(16)}`;
+}
+
+function normalizeCacheContext(context = []) {
+    return (context || []).slice(-5).map(item => ({
+        original: String(item?.original || ''),
+        translated: String(item?.translated || '')
+    }));
+}
+
+function createTranslationCacheIdentity(kind, sourceText, targetLang, nativeLang, settings, context = [], extra = {}) {
+    const provider = settings?.aiProvider || 'openai';
+    const endpoint = provider === 'local' ? settings?.localEndpoint : settings?.apiEndpoint;
+    const model = provider === 'local' ? settings?.localModel : settings?.apiModel;
+    return {
+        schema: 2,
+        kind,
+        sourceText: String(sourceText || ''),
+        targetLang: String(targetLang || ''),
+        nativeLang: String(nativeLang || ''),
+        provider,
+        endpoint: String(endpoint || '').replace(/\?.*$/, '').replace(/\/+$/, ''),
+        model: String(model || ''),
+        rulesVersion: TRANSLATION_RULES_VERSION,
+        context: normalizeCacheContext(context),
+        extra
+    };
+}
+
+function translationCacheKey(identity) {
+    return `${TRANSLATION_CACHE_PREFIX}${identity.kind}_${hashStableText(stableSerialize(identity))}`;
+}
+
+function storageLocalGet(keys) {
+    return new Promise((resolve, reject) => {
+        chrome.storage.local.get(keys, result => {
+            if (chrome.runtime?.lastError) {
+                reject(new TranslationError(`Cache read failed: ${chrome.runtime.lastError.message}`, {
+                    code: 'CACHE_READ_FAILED',
+                    retryable: true
+                }));
+                return;
+            }
+            resolve(result || {});
+        });
+    });
+}
+
+function storageLocalSet(values) {
+    return new Promise((resolve, reject) => {
+        chrome.storage.local.set(values, () => {
+            if (chrome.runtime?.lastError) {
+                reject(new TranslationError(`Cache write failed: ${chrome.runtime.lastError.message}`, {
+                    code: 'CACHE_WRITE_FAILED',
+                    retryable: true
+                }));
+                return;
+            }
+            resolve();
+        });
+    });
+}
+
+function storageLocalRemove(keys) {
+    return new Promise((resolve, reject) => {
+        if (!keys || (Array.isArray(keys) && keys.length === 0)) return resolve();
+        chrome.storage.local.remove(keys, () => {
+            if (chrome.runtime?.lastError) {
+                reject(new TranslationError(`Cache cleanup failed: ${chrome.runtime.lastError.message}`, {
+                    code: 'CACHE_CLEANUP_FAILED',
+                    retryable: true
+                }));
+                return;
+            }
+            resolve();
+        });
+    });
+}
+
+function withTranslationCacheLock(operation) {
+    const run = translationCacheMutation.then(operation, operation);
+    translationCacheMutation = run.catch(() => {});
+    return run;
+}
+
+function estimateCacheBytes(value) {
+    const serialized = JSON.stringify(value);
+    return typeof TextEncoder !== 'undefined'
+        ? new TextEncoder().encode(serialized).length
+        : serialized.length * 2;
+}
+
+async function getVerifiedTranslationCache(identity, requestOptions = {}) {
+    requestOptions.assertCurrent?.();
+    const key = translationCacheKey(identity);
+    const canonicalIdentity = stableSerialize(identity);
+    return withTranslationCacheLock(async () => {
+        const stored = await storageLocalGet([key, TRANSLATION_CACHE_INDEX_KEY]);
+        const entry = stored[key];
+        if (!entry || entry.version !== 2 || entry.identity !== canonicalIdentity || entry.sourceText !== identity.sourceText) {
+            return null;
+        }
+
+        const now = Date.now();
+        const index = stored[TRANSLATION_CACHE_INDEX_KEY] || {};
+        index[key] = { size: entry.size || estimateCacheBytes(entry), lastAccessed: now };
+        entry.lastAccessed = now;
+        await storageLocalSet({ [key]: entry, [TRANSLATION_CACHE_INDEX_KEY]: index });
+        requestOptions.assertCurrent?.();
+        return entry.value;
+    });
+}
+
+async function setVerifiedTranslationCache(identity, value, requestOptions = {}) {
+    requestOptions.assertCurrent?.();
+    const key = translationCacheKey(identity);
+    const now = Date.now();
+    const entry = {
+        version: 2,
+        identity: stableSerialize(identity),
+        sourceText: identity.sourceText,
+        value,
+        createdAt: now,
+        lastAccessed: now
+    };
+    entry.size = estimateCacheBytes(entry);
+    if (entry.size > TRANSLATION_CACHE_MAX_BYTES) return false;
+
+    return withTranslationCacheLock(async () => {
+        const stored = await storageLocalGet(TRANSLATION_CACHE_INDEX_KEY);
+        const index = stored[TRANSLATION_CACHE_INDEX_KEY] || {};
+        index[key] = { size: entry.size, lastAccessed: now };
+
+        const ordered = Object.entries(index).sort((a, b) => a[1].lastAccessed - b[1].lastAccessed);
+        let totalBytes = ordered.reduce((sum, [, meta]) => sum + (meta.size || 0), 0);
+        const remove = [];
+        while (ordered.length > TRANSLATION_CACHE_MAX_ENTRIES || totalBytes > TRANSLATION_CACHE_MAX_BYTES) {
+            const [oldKey, meta] = ordered.shift();
+            if (oldKey === key && ordered.length === 0) break;
+            delete index[oldKey];
+            remove.push(oldKey);
+            totalBytes -= meta.size || 0;
+        }
+
+        requestOptions.assertCurrent?.();
+        await storageLocalSet({ [key]: entry, [TRANSLATION_CACHE_INDEX_KEY]: index });
+        await storageLocalRemove(remove);
+        return true;
+    });
+}
+
+async function readTranslationCache(identity, requestOptions = {}) {
+    try {
+        return await getVerifiedTranslationCache(identity, requestOptions);
+    } catch (error) {
+        if (error?.stale || error?.code === 'REQUEST_CANCELLED') throw error;
+        console.warn('[YT Bilingual] Translation cache read skipped:', error.message);
+        return null;
+    }
+}
+
+async function writeTranslationCache(identity, value, requestOptions = {}) {
+    try {
+        return await setVerifiedTranslationCache(identity, value, requestOptions);
+    } catch (error) {
+        requestOptions.assertCurrent?.();
+        console.warn('[YT Bilingual] Translation cache write skipped:', error.message);
+        return false;
+    }
+}
+
+function boundedNumber(value, fallback, min, max) {
+    const number = Number(value);
+    return Math.max(min, Math.min(max, Number.isFinite(number) ? number : fallback));
+}
+
+function getRequestPolicy(settings = {}, provider = 'cloud') {
+    const defaultTimeout = provider === 'local' ? 60000 : 20000;
+    const requestedTimeout = provider === 'local'
+        ? (settings.localTranslationTimeoutMs ?? settings.translationTimeoutMs)
+        : settings.translationTimeoutMs;
+    return {
+        timeoutMs: boundedNumber(requestedTimeout, defaultTimeout, 50, 300000),
+        maxRetries: boundedNumber(settings.translationMaxRetries, provider === 'local' ? 0 : 1, 0, 4),
+        retryBaseDelayMs: boundedNumber(settings.translationRetryDelayMs, 400, 0, 10000)
+    };
+}
+
+function assertRequestCurrent(requestOptions = {}) {
+    requestOptions.assertCurrent?.();
+    if (requestOptions.signal?.aborted) {
+        requestOptions.assertCurrent?.();
+        throw new TranslationError('Translation request was cancelled.', {
+            code: 'REQUEST_CANCELLED',
+            retryable: false
+        });
+    }
+}
+
+function waitForRetry(delayMs, requestOptions = {}) {
+    if (delayMs <= 0) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+        const signal = requestOptions.signal;
+        const finish = () => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+        };
+        const timer = setTimeout(finish, delayMs);
+        const onAbort = () => {
+            clearTimeout(timer);
+            try {
+                requestOptions.assertCurrent?.();
+                reject(new TranslationError('Translation request was cancelled.', {
+                    code: 'REQUEST_CANCELLED',
+                    retryable: false
+                }));
+            } catch (error) {
+                reject(error);
+            }
+        };
+        if (!signal) return;
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+    });
+}
+
+function isRetryableStatus(status) {
+    return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+function parseRetryAfterMs(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+    const date = Date.parse(value);
+    return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+}
+
+async function fetchAttempt(url, init, timeoutMs, requestOptions = {}) {
+    assertRequestCurrent(requestOptions);
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort('translation-timeout');
+    }, timeoutMs);
+    const onExternalAbort = () => controller.abort('stale-translation-task');
+    requestOptions.signal?.addEventListener('abort', onExternalAbort, { once: true });
+
+    try {
+        const response = await fetch(url, { ...init, signal: controller.signal });
+        assertRequestCurrent(requestOptions);
+        return response;
+    } catch (error) {
+        if (requestOptions.signal?.aborted) {
+            requestOptions.assertCurrent?.();
+            throw new TranslationError('Translation request was cancelled.', {
+                code: 'REQUEST_CANCELLED',
+                retryable: false
+            });
+        }
+        if (timedOut) {
+            throw new TranslationError(`Translation request timed out after ${timeoutMs} ms.`, {
+                code: 'REQUEST_TIMEOUT',
+                retryable: true
+            });
+        }
+        throw new TranslationError(error?.message || 'Network request failed.', {
+            code: 'NETWORK_ERROR',
+            retryable: true
+        });
+    } finally {
+        clearTimeout(timeout);
+        requestOptions.signal?.removeEventListener('abort', onExternalAbort);
+    }
+}
+
+async function requestJsonWithRetry(url, init, settings, provider, requestOptions = {}) {
+    const policy = getRequestPolicy(settings, provider);
+    let lastError = null;
+    for (let attempt = 0; attempt <= policy.maxRetries; attempt++) {
+        try {
+            const response = await fetchAttempt(url, init, policy.timeoutMs, requestOptions);
+            if (!response.ok) {
+                const body = await response.text();
+                const retryAfterMs = parseRetryAfterMs(response.headers?.get?.('retry-after'));
+                throw new TranslationError(`${provider === 'local' ? 'Local model' : 'API'} error ${response.status}: ${body.slice(0, 300)}`, {
+                    code: 'HTTP_ERROR',
+                    retryable: isRetryableStatus(response.status),
+                    status: response.status,
+                    details: retryAfterMs !== null ? { retryAfterMs } : null
+                });
+            }
+            try {
+                const data = await response.json();
+                assertRequestCurrent(requestOptions);
+                return requestOptions.validateResponse
+                    ? requestOptions.validateResponse(data)
+                    : data;
+            } catch (error) {
+                if (error instanceof TranslationError) throw error;
+                throw new TranslationError('The translation service returned invalid JSON.', {
+                    code: 'INVALID_SERVICE_RESPONSE',
+                    retryable: true
+                });
+            }
+        } catch (error) {
+            lastError = normalizeTranslationError(error);
+            if (!lastError.retryable || attempt >= policy.maxRetries) {
+                lastError.details = { ...(lastError.details || {}), attempts: attempt + 1 };
+                throw lastError;
+            }
+            const retryDelay = Math.min(
+                30000,
+                lastError.details?.retryAfterMs ?? policy.retryBaseDelayMs * (2 ** attempt)
+            );
+            await waitForRetry(retryDelay, requestOptions);
+        }
+    }
+    throw lastError || new TranslationError('Translation request failed.', { retryable: true });
+}
+
+function normalizeComparableText(text) {
+    return String(text || '').toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function extractNumericTokens(text) {
+    return (String(text || '').match(/\d+(?:[.,:]\d+)*/g) || [])
+        .map(token => token.replace(/[,:.]/g, ''))
+        .filter(Boolean);
+}
+
+function extractTechnicalTokens(text) {
+    const candidates = String(text || '').match(/\b(?:[A-Z]{2,}|[A-Za-z]+[A-Z][A-Za-z0-9]*|[A-Za-z]+\d+[A-Za-z0-9]*|\w+\.\w{2,5})\b/g) || [];
+    return Array.from(new Set(candidates.filter(token => token.length > 1)));
+}
+
+function targetScriptPattern(language) {
+    if (language === 'zh') return /[\u3400-\u9fff]/g;
+    if (language === 'ja') return /[\u3040-\u30ff\u3400-\u9fff]/g;
+    if (language === 'ko') return /[\uac00-\ud7af]/g;
+    if (language === 'ar') return /[\u0600-\u06ff]/g;
+    if (language === 'hi') return /[\u0900-\u097f]/g;
+    if (language === 'th') return /[\u0e00-\u0e7f]/g;
+    if (language === 'ru' || language === 'uk') return /[\u0400-\u04ff]/g;
+    return /[A-Za-z\u00c0-\u024f]/g;
+}
+
+function validateTranslationCandidate(segment, translation, targetLang, nativeLang, options = {}) {
+    const source = String(segment?.text ?? segment ?? '').trim();
+    const translated = normalizeTranslationText(translation);
+    const reasons = [];
+
+    if (!translated) reasons.push('empty');
+    if (options.truncated) reasons.push('truncated');
+    if (!source) return { valid: Boolean(translated), translation: translated, reasons };
+    if (!translated) return { valid: false, translation: '', reasons };
+
+    const sourceComparable = normalizeComparableText(source);
+    const translatedComparable = normalizeComparableText(translated);
+    const sourceAlphabetic = source.match(/\p{L}/gu) || [];
+    if (targetLang !== nativeLang && sourceAlphabetic.length > 2 && sourceComparable === translatedComparable) {
+        reasons.push('source-repeated');
+    }
+
+    for (const number of extractNumericTokens(source)) {
+        if (!extractNumericTokens(translated).includes(number)) {
+            reasons.push(`missing-number:${number}`);
+        }
+    }
+
+    const translatedLower = translated.toLocaleLowerCase();
+    for (const token of extractTechnicalTokens(source)) {
+        if (!translatedLower.includes(token.toLocaleLowerCase())) {
+            reasons.push(`missing-token:${token}`);
+        }
+    }
+
+    const sourceLetters = source.match(/[\p{L}\p{N}]/gu) || [];
+    const scriptMatches = translated.match(targetScriptPattern(nativeLang)) || [];
+    const translatedLetters = translated.match(/[\p{L}\p{N}]/gu) || [];
+    const mostlyTechnical = extractTechnicalTokens(source).join('').length >= sourceLetters.length * 0.7;
+    if (sourceAlphabetic.length >= 4 && !mostlyTechnical && scriptMatches.length / Math.max(1, translatedLetters.length) < 0.15) {
+        reasons.push('target-language-mismatch');
+    }
+
+    const sourceLength = source.replace(/\s/g, '').length;
+    const translatedLength = translated.replace(/\s/g, '').length;
+    if (sourceLength >= 12) {
+        const ratio = translatedLength / sourceLength;
+        if (ratio < 0.08) reasons.push('too-short');
+        if (ratio > 8 || translatedLength > 600) reasons.push('too-long');
+    }
+
+    return { valid: reasons.length === 0, translation: translated, reasons };
+}
+
+function validateTranslationMap(segments, result, targetLang, nativeLang, metadata = {}) {
+    const valid = {};
+    const invalid = {};
+    const nonEmptyIds = (segments || [])
+        .map(segment => String(segment.id))
+        .filter(id => result[id]);
+    const truncatedId = metadata.truncated ? nonEmptyIds[nonEmptyIds.length - 1] : null;
+    const duplicateIds = new Set(metadata.duplicateIds || []);
+
+    for (const segment of segments || []) {
+        const id = String(segment.id);
+        const check = validateTranslationCandidate(segment, result[id], targetLang, nativeLang, {
+            truncated: id === truncatedId || duplicateIds.has(id)
+        });
+        if (check.valid) valid[id] = check.translation;
+        else invalid[id] = check.reasons.length ? check.reasons : ['missing-id'];
+    }
+    return { valid, invalid };
+}
+
+async function handleTranslate(text, targetLang, nativeLang, settings, context = [], skipCache = false, mode = 'quality', requestOptions = {}) {
     if (!text || !text.trim()) return '';
 
-    const cacheKey = makeCacheKey('tr', text, targetLang, nativeLang);
+    const cacheIdentity = createTranslationCacheIdentity(
+        'single', text, targetLang, nativeLang, settings, context, { mode }
+    );
     if (!skipCache) {
-        const cached = await getCache(cacheKey);
+        const cached = await readTranslationCache(cacheIdentity, requestOptions);
         if (cached) return cached;
     }
 
@@ -295,9 +922,9 @@ async function handleTranslate(text, targetLang, nativeLang, settings, context =
         userMsg = `${contextBlock}\n${text}`;
 
         if (settings.aiProvider === 'local') {
-            translation = await fetchOllama(`${system}\n\n${userMsg}`, settings, 120);
+            translation = await fetchOllama(`${system}\n\n${userMsg}`, settings, 120, requestOptions);
         } else {
-            translation = await fetchOpenAI(system, userMsg, settings, 200);
+            translation = await fetchOpenAI(system, userMsg, settings, 200, requestOptions);
         }
     } else {
         // ── Quality mode (default) ────────────────────────────────────────
@@ -316,9 +943,9 @@ CRITICAL RULES:
         userMsg = `${contextBlock}\nTranslate this subtitle:\n${text}`;
 
         if (settings.aiProvider === 'local') {
-            translation = await fetchOllama(`${system}\n\n${userMsg}`, settings, 800);
+            translation = await fetchOllama(`${system}\n\n${userMsg}`, settings, 800, requestOptions);
         } else {
-            translation = await fetchOpenAI(system, userMsg, settings, 1000);
+            translation = await fetchOpenAI(system, userMsg, settings, 1000, requestOptions);
         }
 
         // Robust extraction: LLM sometimes dumps its entire thought process.
@@ -329,8 +956,18 @@ CRITICAL RULES:
     // Strip accidental quotes, whitespace, and any newlines
     translation = normalizeTranslationText(translation);
 
-    if (translation) await setCache(cacheKey, translation);
-    return translation;
+    const validation = validateTranslationCandidate({ text }, translation, targetLang, nativeLang);
+    if (!validation.valid) {
+        throw new TranslationError(`Translation failed quality checks: ${validation.reasons.join(', ')}`, {
+            code: 'TRANSLATION_VALIDATION_FAILED',
+            retryable: true,
+            details: { reasons: validation.reasons }
+        });
+    }
+
+    requestOptions.assertCurrent?.();
+    await writeTranslationCache(cacheIdentity, validation.translation, requestOptions);
+    return validation.translation;
 }
 
 // ─── Block Translation (numbered segments) ────────────────────────────────────
@@ -347,14 +984,24 @@ CRITICAL RULES:
  * @param {Array} context
  * @returns {Object} - Map of { id: translatedText }
  */
-async function handleBlockTranslate(segments, targetLang, nativeLang, settings, context = []) {
+async function handleBlockTranslate(segments, targetLang, nativeLang, settings, context = [], requestOptions = {}) {
     if (!segments || !segments.length) return {};
 
-    // Build a stable cache key from all segment texts
-    const blockText = segments.map(s => `${s.id}:${s.text}`).join('|');
-    const cacheKey = makeCacheKey('blk', blockText, targetLang, nativeLang);
-    const cached = await getCache(cacheKey);
-    if (cached) return cached;
+    const blockText = JSON.stringify(segments.map(s => ({
+        id: String(s.id),
+        text: s.text,
+        prevText: s.prevText || '',
+        nextText: s.nextText || '',
+        displayBreakReason: s.displayBreakReason || ''
+    })));
+    const cacheIdentity = createTranslationCacheIdentity(
+        'numbered-block', blockText, targetLang, nativeLang, settings, context
+    );
+    const cached = await readTranslationCache(cacheIdentity, requestOptions);
+    if (cached) {
+        const cachedCheck = validateTranslationMap(segments, cached, targetLang, nativeLang);
+        if (Object.keys(cachedCheck.invalid).length === 0) return cachedCheck.valid;
+    }
 
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
@@ -391,31 +1038,40 @@ CRITICAL RULES:
 Translate these subtitle segments:
 ${numberedLines}`;
 
-    let rawOutput;
+    let modelResponse;
+    const modelOptions = { ...requestOptions, withMetadata: true, allowTruncated: true };
     if (settings.aiProvider === 'local') {
-        rawOutput = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1200);
+        modelResponse = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1200, modelOptions);
     } else {
-        rawOutput = await fetchOpenAI(system, userMsg, settings, 1500);
+        modelResponse = await fetchOpenAI(system, userMsg, settings, 1500, modelOptions);
     }
 
-    // Parse numbered translations from AI output
-    const result = parseNumberedTranslations(rawOutput || '', segments, nativeLang);
-    const missingSegments = segments.filter(s => !result[s.id]);
-    if (missingSegments.length > 0) {
-        const fallbackTranslations = await translateMissingSegments(missingSegments, segments, targetLang, nativeLang, settings, context);
-        for (const segment of missingSegments) {
-            if (fallbackTranslations[segment.id]) {
-                result[segment.id] = fallbackTranslations[segment.id];
-            }
-        }
+    const parsed = parseNumberedTranslationsDetailed(modelResponse.text, segments, nativeLang);
+    const firstCheck = validateTranslationMap(segments, parsed.result, targetLang, nativeLang, {
+        truncated: modelResponse.truncated,
+        duplicateIds: parsed.duplicateIds
+    });
+    const result = { ...firstCheck.valid };
+    const invalidSegments = segments.filter(segment => firstCheck.invalid[String(segment.id)]);
+    if (invalidSegments.length > 0) {
+        const repairs = await translateMissingSegments(
+            invalidSegments, segments, targetLang, nativeLang, settings, context, requestOptions
+        );
+        Object.assign(result, repairs);
     }
 
-    // Cache only if we got translations for all segments
-    const gotAll = segments.every(s => result[s.id] && result[s.id].length > 0);
-    if (gotAll) {
-        await setCache(cacheKey, result);
+    const finalCheck = validateTranslationMap(segments, result, targetLang, nativeLang);
+    if (Object.keys(finalCheck.invalid).length > 0) {
+        throw new TranslationError('One or more subtitle lines failed translation quality checks.', {
+            code: 'BLOCK_VALIDATION_FAILED',
+            retryable: true,
+            details: { invalid: finalCheck.invalid }
+        });
     }
-    return result;
+
+    requestOptions.assertCurrent?.();
+    await writeTranslationCache(cacheIdentity, finalCheck.valid, requestOptions);
+    return finalCheck.valid;
 }
 
 
@@ -445,20 +1101,32 @@ function extractFirstJsonObject(raw) {
     return '';
 }
 
-function parseStructuredTranslationJson(raw, segments) {
+function parseStructuredTranslationJsonDetailed(raw, segments) {
     const result = {};
     const wanted = new Set((segments || []).map(s => String(s.id)));
+    const seen = new Set();
+    const duplicateIds = new Set();
+    const unexpectedIds = new Set();
+    let parseMode = 'json';
 
     try {
         const jsonText = extractFirstJsonObject(raw);
         const parsed = JSON.parse(jsonText || raw);
         const items = Array.isArray(parsed) ? parsed : (parsed.items || parsed.translations || []);
+        if (!Array.isArray(items)) throw new Error('Structured response has no items array.');
         for (const item of items) {
             const id = String(item.id ?? item.cue_id ?? item.cueId ?? '');
             const translation = normalizeTranslationText(item.translation ?? item.text ?? item.value ?? '');
-            if (wanted.has(id) && translation) result[id] = translation;
+            if (!wanted.has(id)) {
+                if (id) unexpectedIds.add(id);
+                continue;
+            }
+            if (seen.has(id)) duplicateIds.add(id);
+            seen.add(id);
+            if (translation) result[id] = translation;
         }
     } catch {
+        parseMode = 'fallback';
         // Regex fallback for models that ignored JSON but preserved ids.
         const text = String(raw || '').replace(/<TRANSLATIONS>|<\/TRANSLATIONS>/gi, '');
         for (const segment of segments || []) {
@@ -475,16 +1143,36 @@ function parseStructuredTranslationJson(raw, segments) {
     for (const segment of segments || []) {
         if (!result[String(segment.id)]) result[String(segment.id)] = '';
     }
-    return result;
+    return {
+        result,
+        duplicateIds: Array.from(duplicateIds),
+        unexpectedIds: Array.from(unexpectedIds),
+        parseMode
+    };
 }
 
-async function handleStructuredBlockTranslate(segments, targetLang, nativeLang, settings, context = []) {
+function parseStructuredTranslationJson(raw, segments) {
+    return parseStructuredTranslationJsonDetailed(raw, segments).result;
+}
+
+async function handleStructuredBlockTranslate(segments, targetLang, nativeLang, settings, context = [], requestOptions = {}) {
     if (!segments || !segments.length) return {};
 
-    const stableText = segments.map(s => `${s.id}:${s.text}`).join('|');
-    const cacheKey = makeCacheKey('sblk', stableText, targetLang, nativeLang);
-    const cached = await getCache(cacheKey);
-    if (cached) return cached;
+    const stableText = JSON.stringify(segments.map(s => ({
+        id: String(s.id),
+        text: s.text,
+        prevText: s.prevText || '',
+        nextText: s.nextText || '',
+        displayBreakReason: s.displayBreakReason || ''
+    })));
+    const cacheIdentity = createTranslationCacheIdentity(
+        'structured-block', stableText, targetLang, nativeLang, settings, context
+    );
+    const cached = await readTranslationCache(cacheIdentity, requestOptions);
+    if (cached) {
+        const cachedCheck = validateTranslationMap(segments, cached, targetLang, nativeLang);
+        if (Object.keys(cachedCheck.invalid).length === 0) return cachedCheck.valid;
+    }
 
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
@@ -512,25 +1200,40 @@ Rules:
 
     const userMsg = `${contextBlock}\nTranslate this JSON payload:\n${JSON.stringify(payload, null, 2)}`;
 
-    let rawOutput;
+    let modelResponse;
+    const modelOptions = { ...requestOptions, withMetadata: true, allowTruncated: true };
     if (settings.aiProvider === 'local') {
-        rawOutput = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1400);
+        modelResponse = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1400, modelOptions);
     } else {
-        rawOutput = await fetchOpenAI(system, userMsg, settings, 1800);
+        modelResponse = await fetchOpenAI(system, userMsg, settings, 1800, modelOptions);
     }
 
-    const result = parseStructuredTranslationJson(rawOutput || '', segments);
-
-    for (const segment of segments) {
-        const id = String(segment.id);
-        if (!result[id]) {
-            result[id] = await handleTranslate(segment.text, targetLang, nativeLang, settings, context, false, 'fast');
-        }
+    const parsed = parseStructuredTranslationJsonDetailed(modelResponse.text, segments);
+    const firstCheck = validateTranslationMap(segments, parsed.result, targetLang, nativeLang, {
+        truncated: modelResponse.truncated,
+        duplicateIds: parsed.duplicateIds
+    });
+    const result = { ...firstCheck.valid };
+    const invalidSegments = segments.filter(segment => firstCheck.invalid[String(segment.id)]);
+    if (invalidSegments.length > 0) {
+        const repairs = await translateMissingSegments(
+            invalidSegments, segments, targetLang, nativeLang, settings, context, requestOptions
+        );
+        Object.assign(result, repairs);
     }
 
-    const gotAll = segments.every(s => result[String(s.id)] && result[String(s.id)].trim());
-    if (gotAll) await setCache(cacheKey, result);
-    return result;
+    const finalCheck = validateTranslationMap(segments, result, targetLang, nativeLang);
+    if (Object.keys(finalCheck.invalid).length > 0) {
+        throw new TranslationError('One or more structured subtitle lines failed translation quality checks.', {
+            code: 'STRUCTURED_BLOCK_VALIDATION_FAILED',
+            retryable: true,
+            details: { invalid: finalCheck.invalid, unexpectedIds: parsed.unexpectedIds }
+        });
+    }
+
+    requestOptions.assertCurrent?.();
+    await writeTranslationCache(cacheIdentity, finalCheck.valid, requestOptions);
+    return finalCheck.valid;
 }
 
 // ─── Web Page Paragraph Translation ──────────────────────────────────────────
@@ -547,7 +1250,7 @@ Rules:
  * @param {Array}  context     - recent translated pairs for continuity
  * @returns {Object} map of { id: translatedText }
  */
-async function handleWebPageTranslate(paragraphs, targetLang, nativeLang, settings, context = []) {
+async function handleWebPageTranslate(paragraphs, targetLang, nativeLang, settings, context = [], requestOptions = {}) {
     if (!paragraphs || !paragraphs.length) return {};
 
     const BATCH_SIZE = 8;
@@ -559,13 +1262,25 @@ async function handleWebPageTranslate(paragraphs, targetLang, nativeLang, settin
     for (let i = 0; i < paragraphs.length; i += BATCH_SIZE) {
         const batch = paragraphs.slice(i, i + BATCH_SIZE);
 
-        // Build a stable cache key
-        const blockText = batch.map(p => `${p.id}:${p.text}`).join('|');
-        const cacheKey = makeCacheKey('wp', blockText, targetLang, nativeLang);
-        const cached = await getCache(cacheKey);
+        const blockText = JSON.stringify(batch.map(p => ({ id: String(p.id), text: p.text })));
+        const cacheIdentity = createTranslationCacheIdentity(
+            'web-page-block', blockText, targetLang, nativeLang, settings, context
+        );
+        const cached = await readTranslationCache(cacheIdentity, requestOptions);
         if (cached) {
-            Object.assign(result, cached);
-            continue;
+            const cachedCheck = validateTranslationMap(batch, cached, targetLang, nativeLang);
+            if (Object.keys(cachedCheck.invalid).length === 0) {
+                Object.assign(result, cachedCheck.valid);
+                for (const paragraph of batch) {
+                    const translated = cachedCheck.valid[String(paragraph.id)];
+                    context.push({
+                        original: paragraph.text.slice(0, 80),
+                        translated: translated.slice(0, 80)
+                    });
+                    if (context.length > 6) context.shift();
+                }
+                continue;
+            }
         }
 
         // Build numbered lines
@@ -581,35 +1296,51 @@ Format: one line per item, exactly like [1] 翻译内容`;
 
         const userMsg = `${contextBlock}\nTranslate these paragraphs:\n${numberedLines}`;
 
-        let rawOutput;
+        let modelResponse;
+        const modelOptions = { ...requestOptions, withMetadata: true, allowTruncated: true };
         if (settings.aiProvider === 'local') {
-            rawOutput = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1500);
+            modelResponse = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1500, modelOptions);
         } else {
-            rawOutput = await fetchOpenAI(system, userMsg, settings, 2000);
+            modelResponse = await fetchOpenAI(system, userMsg, settings, 2000, modelOptions);
         }
 
-        const batchResult = parseNumberedTranslations(rawOutput || '', batch, nativeLang);
-
-        // Fallback for any missing
-        const missing = batch.filter(p => !batchResult[p.id] || !batchResult[p.id].trim());
-        if (missing.length > 0) {
-            const fallbacks = await translateMissingSegments(missing, batch, targetLang, nativeLang, settings, context);
+        const parsed = parseNumberedTranslationsDetailed(modelResponse.text, batch, nativeLang);
+        const firstCheck = validateTranslationMap(batch, parsed.result, targetLang, nativeLang, {
+            truncated: modelResponse.truncated,
+            duplicateIds: parsed.duplicateIds
+        });
+        const batchResult = { ...firstCheck.valid };
+        const invalid = batch.filter(p => firstCheck.invalid[String(p.id)]);
+        if (invalid.length > 0) {
+            const fallbacks = await translateMissingSegments(
+                invalid, batch, targetLang, nativeLang, settings, context, requestOptions
+            );
             Object.assign(batchResult, fallbacks);
         }
 
-        Object.assign(result, batchResult);
+        const finalCheck = validateTranslationMap(batch, batchResult, targetLang, nativeLang);
+        if (Object.keys(finalCheck.invalid).length > 0) {
+            throw new TranslationError('One or more web page translations failed quality checks.', {
+                code: 'WEB_TRANSLATION_VALIDATION_FAILED',
+                retryable: true,
+                details: { invalid: finalCheck.invalid }
+            });
+        }
+
+        Object.assign(result, finalCheck.valid);
 
         // Update context for next batch
         for (const p of batch) {
-            if (batchResult[p.id]) {
-                context.push({ original: p.text.slice(0, 80), translated: batchResult[p.id].slice(0, 80) });
+            if (finalCheck.valid[String(p.id)]) {
+                context.push({
+                    original: p.text.slice(0, 80),
+                    translated: finalCheck.valid[String(p.id)].slice(0, 80)
+                });
                 if (context.length > 6) context.shift();
             }
         }
 
-        // Cache this batch
-        const gotAll = batch.every(p => batchResult[p.id] && batchResult[p.id].length > 0);
-        if (gotAll) await setCache(cacheKey, batchResult);
+        await writeTranslationCache(cacheIdentity, finalCheck.valid, requestOptions);
     }
 
     return result;
@@ -621,8 +1352,12 @@ Format: one line per item, exactly like [1] 翻译内容`;
  *   [2] 另一行翻译
  * Returns { 1: "翻译内容", 2: "另一行翻译" }
  */
-function parseNumberedTranslations(raw, segments, nativeLang) {
+function parseNumberedTranslationsDetailed(raw, segments, nativeLang) {
     const result = {};
+    const wanted = new Set((segments || []).map(s => String(s.id)));
+    const seen = new Set();
+    const duplicateIds = new Set();
+    const unexpectedIds = new Set();
 
     // Try to extract from <TRANSLATIONS> tags first
     const tagsMatch = raw.match(/<TRANSLATIONS>([\s\S]*?)<\/TRANSLATIONS>/i);
@@ -632,7 +1367,14 @@ function parseNumberedTranslations(raw, segments, nativeLang) {
     for (const match of text.matchAll(bracketPattern)) {
         const id = parseInt(match[1], 10);
         const translation = normalizeTranslationText(match[2]);
-        if (translation) result[id] = translation;
+        const idKey = String(id);
+        if (!wanted.has(idKey)) {
+            unexpectedIds.add(idKey);
+        } else {
+            if (seen.has(idKey)) duplicateIds.add(idKey);
+            seen.add(idKey);
+            if (translation) result[id] = translation;
+        }
     }
 
     // Fallback: try "N." or "N)" format if [N] didn't match
@@ -643,7 +1385,13 @@ function parseNumberedTranslations(raw, segments, nativeLang) {
             if (m) {
                 const id = parseInt(m[1], 10);
                 const translation = normalizeTranslationText(m[2]);
-                if (translation) result[id] = translation;
+                const idKey = String(id);
+                if (!wanted.has(idKey)) unexpectedIds.add(idKey);
+                else {
+                    if (seen.has(idKey)) duplicateIds.add(idKey);
+                    seen.add(idKey);
+                    if (translation) result[id] = translation;
+                }
             }
         }
     }
@@ -671,10 +1419,18 @@ function parseNumberedTranslations(raw, segments, nativeLang) {
         if (!result[seg.id]) result[seg.id] = '';
     }
 
-    return result;
+    return {
+        result,
+        duplicateIds: Array.from(duplicateIds),
+        unexpectedIds: Array.from(unexpectedIds)
+    };
 }
 
-async function translateMissingSegments(missingSegments, allSegments, targetLang, nativeLang, settings, context = []) {
+function parseNumberedTranslations(raw, segments, nativeLang) {
+    return parseNumberedTranslationsDetailed(raw, segments, nativeLang).result;
+}
+
+async function translateMissingSegments(missingSegments, allSegments, targetLang, nativeLang, settings, context = [], requestOptions = {}) {
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
     const blockLines = allSegments.map(s => `[${s.id}] ${s.text}`).join('\n');
@@ -700,15 +1456,16 @@ ${blockLines}
 
         let rawOutput;
         if (settings.aiProvider === 'local') {
-            rawOutput = await fetchOllama(`${system}\n\n${userMsg}`, settings, 220);
+            rawOutput = await fetchOllama(`${system}\n\n${userMsg}`, settings, 220, requestOptions);
         } else {
-            rawOutput = await fetchOpenAI(system, userMsg, settings, 260);
+            rawOutput = await fetchOpenAI(system, userMsg, settings, 260, requestOptions);
         }
 
         const translation = normalizeTranslationText(extractFinalTranslation(rawOutput || '', nativeLang) || rawOutput || '');
         if (translation) {
             result[segment.id] = translation;
         }
+        requestOptions.assertCurrent?.();
     }
 
     return result;
@@ -752,7 +1509,19 @@ Where translation and explanation are in ${nName}.`;
 
 // ─── Fetch: OpenAI-compatible ─────────────────────────────────────────────────
 
-async function fetchOpenAI(system, user, settings, maxTokens = 1000) {
+async function fetchOpenAI(system, user, settings, maxTokens = 1000, requestOptions = {}) {
+    if (!settings?.apiEndpoint) {
+        throw new TranslationError('API endpoint is not configured.', {
+            code: 'TRANSLATION_CONFIGURATION_ERROR',
+            retryable: false
+        });
+    }
+    if (!settings?.apiModel) {
+        throw new TranslationError('Translation model is not configured.', {
+            code: 'TRANSLATION_CONFIGURATION_ERROR',
+            retryable: false
+        });
+    }
     // Auto-resolve endpoint: if user just gave base URL, append the right path.
     // Supports: OpenAI (/v1/chat/completions), DeepSeek (/chat/completions), etc.
     let endpoint = settings.apiEndpoint.replace(/\/+$/, ''); // strip trailing slashes
@@ -766,7 +1535,7 @@ async function fetchOpenAI(system, user, settings, maxTokens = 1000) {
         }
     }
 
-    const res = await fetch(endpoint, {
+    const init = {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -781,25 +1550,52 @@ async function fetchOpenAI(system, user, settings, maxTokens = 1000) {
             temperature: 0.3,
             max_tokens: maxTokens
         })
-    });
+    };
 
-    if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`API Error ${res.status}: ${body.slice(0, 300)}`);
-    }
-
-    const data = await res.json();
-    return (data.choices?.[0]?.message?.content || '').trim();
+    const result = await requestJsonWithRetry(endpoint, init, settings,
+        requestOptions.providerOverride || (settings.aiProvider === 'local' ? 'local' : 'cloud'), {
+            ...requestOptions,
+            validateResponse(data) {
+                const choice = data?.choices?.[0];
+                const rawContent = choice?.message?.content;
+                const text = Array.isArray(rawContent)
+                    ? rawContent.map(part => part?.text || '').join('')
+                    : String(rawContent || '');
+                const finishReason = choice?.finish_reason || '';
+                const truncated = finishReason === 'length' || finishReason === 'max_tokens';
+                if (!text.trim()) {
+                    throw new TranslationError('The translation service returned an empty response.', {
+                        code: 'EMPTY_TRANSLATION_RESPONSE',
+                        retryable: true
+                    });
+                }
+                if (truncated && !requestOptions.allowTruncated) {
+                    throw new TranslationError('The translation response was truncated.', {
+                        code: 'TRUNCATED_TRANSLATION_RESPONSE',
+                        retryable: true,
+                        details: { finishReason }
+                    });
+                }
+                return { text: text.trim(), truncated, finishReason, provider: 'openai-compatible' };
+            }
+        });
+    return requestOptions.withMetadata ? result : result.text;
 }
 
 // ─── Fetch: Ollama (/api/generate) ───────────────────────────────────────────
 
-async function fetchOllama(prompt, settings, numPredict = 800) {
+async function fetchOllama(prompt, settings, numPredict = 800, requestOptions = {}) {
     const endpoint = settings.localEndpoint || 'http://localhost:11434/api/generate';
+    if (!settings?.localModel) {
+        throw new TranslationError('Local translation model is not configured.', {
+            code: 'TRANSLATION_CONFIGURATION_ERROR',
+            retryable: false
+        });
+    }
 
     if (endpoint.includes('/api/generate')) {
         // Native Ollama API
-        const res = await fetch(endpoint, {
+        const init = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -813,22 +1609,45 @@ async function fetchOllama(prompt, settings, numPredict = 800) {
                     temperature: 0.3
                 }
             })
+        };
+
+        const result = await requestJsonWithRetry(endpoint, init, settings, 'local', {
+            ...requestOptions,
+            validateResponse(data) {
+                const text = String(data?.response || '').trim();
+                const finishReason = data?.done_reason || '';
+                const truncated = finishReason === 'length' || finishReason === 'max_tokens' || data?.done === false;
+                if (!text) {
+                    throw new TranslationError('The local model returned an empty response.', {
+                        code: 'EMPTY_TRANSLATION_RESPONSE',
+                        retryable: true
+                    });
+                }
+                if (truncated && !requestOptions.allowTruncated) {
+                    throw new TranslationError('The local model response was truncated.', {
+                        code: 'TRUNCATED_TRANSLATION_RESPONSE',
+                        retryable: true,
+                        details: { finishReason }
+                    });
+                }
+                return { text, truncated, finishReason, provider: 'ollama' };
+            }
         });
-
-        if (!res.ok) {
-            const body = await res.text();
-            throw new Error(`Ollama Error ${res.status}: ${body.slice(0, 300)}`);
-        }
-
-        const data = await res.json();
-        return (data.response || '').trim();
+        return requestOptions.withMetadata ? result : result.text;
     }
 
     // Fallback: OpenAI-compatible local endpoint (LM Studio, text-gen-webui, etc.)
     return fetchOpenAI(
         'You are a helpful assistant.',
         prompt,
-        { ...settings, apiEndpoint: endpoint, apiKey: settings.apiKey || 'local' }
+        {
+            ...settings,
+            apiEndpoint: endpoint,
+            apiKey: settings.apiKey || 'local',
+            apiModel: settings.localModel
+        },
+        numPredict,
+        { ...requestOptions, providerOverride: 'local' }
     );
 }
 

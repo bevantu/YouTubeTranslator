@@ -39,6 +39,7 @@ const SubtitleManager = {
     currentCaptionMeta: null,
     debugEvents: [],
     preTranslating: false,
+    vocabularyUpdateHandler: null,
 
     // ── Init ──────────────────────────────────────────────────────────────────
 
@@ -48,9 +49,13 @@ const SubtitleManager = {
         this.createSubtitleContainer();
         this.attachTimeupdateListener();
 
-        document.addEventListener('yb-vocabulary-updated', async () => {
+        if (this.vocabularyUpdateHandler) {
+            document.removeEventListener('yb-vocabulary-updated', this.vocabularyUpdateHandler);
+        }
+        this.vocabularyUpdateHandler = async () => {
             this.vocabulary = await StorageHelper.getVocabulary();
-        });
+        };
+        document.addEventListener('yb-vocabulary-updated', this.vocabularyUpdateHandler);
     },
 
     // ── Subtitle container ────────────────────────────────────────────────────
@@ -847,7 +852,7 @@ const SubtitleManager = {
                             "does", "have", "from", "this", "with", "will", "been", "were"
                         ]);
 
-                        if (!stemForLookup || ALWAYS_KNOWN.has(stemForLookup) || ALWAYS_KNOWN.has(checkToken)) {
+                        if (!stemForLookup || stemForLookup.length === 1 || checkToken.length === 1 || ALWAYS_KNOWN.has(stemForLookup) || ALWAYS_KNOWN.has(checkToken)) {
                             isKnown = true;
                         } else {
                             const lvl = settings.proficiencyLevel;
@@ -926,6 +931,10 @@ const SubtitleManager = {
 
     destroy() {
         this.preTranslating = false; // cancel any ongoing pre-translation loop
+        if (this.vocabularyUpdateHandler) {
+            document.removeEventListener('yb-vocabulary-updated', this.vocabularyUpdateHandler);
+            this.vocabularyUpdateHandler = null;
+        }
         if (this.warmupTimerId) {
             clearTimeout(this.warmupTimerId);
             this.warmupTimerId = null;

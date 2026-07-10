@@ -28,6 +28,24 @@
     let ctrlHeld = false;
     let mutationObserver = null;
     let dynamicDebounce = null;
+    let sessionGeneration = 0;
+
+    function translationSettingsKey(value = {}) {
+        return [
+            value.targetLanguage || '', value.nativeLanguage || '', value.aiProvider || '',
+            value.apiEndpoint || '', value.apiModel || '', value.localEndpoint || '', value.localModel || ''
+        ].join('|');
+    }
+
+    function cancelWebTranslationRequests() {
+        try {
+            const request = chrome.runtime.sendMessage({
+                action: 'cancelTranslationTasks',
+                taskScope: 'web-page-translation'
+            });
+            request?.catch?.(() => undefined);
+        } catch { /* extension context may already be gone */ }
+    }
 
     // ── Boot ────────────────────────────────────────────────────────────────────
 
@@ -50,9 +68,18 @@
         return true;
     });
 
-    chrome.storage.onChanged.addListener((changes) => {
-        if (changes.settings) {
-            settings = { ...settings, ...changes.settings.newValue };
+    chrome.storage.onChanged.addListener((changes, namespace) => {
+        if (namespace !== 'sync' || !changes.settings) return;
+        const previous = settings || StorageHelper.DEFAULT_SETTINGS;
+        const next = StorageHelper.normalizeSettings(changes.settings.newValue || {});
+        const translationChanged = translationSettingsKey(previous) !== translationSettingsKey(next);
+        settings = next;
+
+        if (isActive && !next.webPageTranslation) stop();
+        else if (!isActive && next.webPageTranslation) start();
+        else if (isActive && translationChanged) {
+            stop();
+            start();
         }
     });
 
@@ -64,7 +91,9 @@
 
     function start() {
         if (isActive) return;
+        const generation = ++sessionGeneration;
         isActive = true;
+        isTranslating = false;
         translationContext = [];
         translationIdCounter = 0;
         processedCount = 0;
@@ -75,15 +104,18 @@
 
         // Slight delay so the DOM has fully rendered (esp. for SPAs)
         setTimeout(() => {
+            if (!isActive || generation !== sessionGeneration) return;
             collectAndTranslate();
             startMutationObserver();
         }, 800);
     }
 
     function stop() {
+        sessionGeneration++;
         isActive = false;
         isTranslating = false;
         paragraphQueue = [];
+        cancelWebTranslationRequests();
         stopMutationObserver();
         removeIndicator();
         restorePage();
@@ -241,23 +273,27 @@
 
     async function processQueue() {
         if (!isActive || isTranslating || paragraphQueue.length === 0) return;
+        const generation = sessionGeneration;
         isTranslating = true;
 
-        while (isActive && paragraphQueue.length > 0) {
+        while (isActive && generation === sessionGeneration && paragraphQueue.length > 0) {
             const batch = paragraphQueue.splice(0, BATCH_SIZE);
-            await translateBatch(batch);
+            await translateBatch(batch, generation);
+            if (!isActive || generation !== sessionGeneration) return;
             processedCount += batch.length;
             updateIndicator(`翻译中 ${processedCount} / ${totalCount}`);
         }
 
+        if (generation !== sessionGeneration) return;
         isTranslating = false;
         if (isActive && paragraphQueue.length === 0) {
             removeIndicator();
         }
     }
 
-    async function translateBatch(batch) {
+    async function translateBatch(batch, generation = sessionGeneration) {
         if (!settings) settings = await StorageHelper.getSettings();
+        if (!isActive || generation !== sessionGeneration) return;
 
         // Filter out elements disconnected from DOM since queued
         const validBatch = batch.filter(item => item.el.isConnected);
@@ -273,9 +309,12 @@
                 targetLang: settings.targetLanguage || 'en',
                 nativeLang: settings.nativeLanguage || 'zh',
                 settings,
-                context: translationContext.slice(-4)
+                context: translationContext.slice(-4),
+                taskId: generation,
+                taskScope: 'web-page-translation'
             });
 
+            if (!isActive || generation !== sessionGeneration) return;
             if (response?.success && response.result) {
                 for (const item of validBatch) {
                     const translation = response.result[item.id];
@@ -290,8 +329,13 @@
                         item.el.setAttribute('data-yb-translated', 'failed');
                     }
                 }
+            } else {
+                validBatch.forEach(item => {
+                    if (item.el.isConnected) item.el.setAttribute('data-yb-translated', 'failed');
+                });
             }
         } catch (err) {
+            if (!isActive || generation !== sessionGeneration) return;
             validBatch.forEach(item => {
                 if (item.el.isConnected) {
                     item.el.setAttribute('data-yb-translated', 'failed');

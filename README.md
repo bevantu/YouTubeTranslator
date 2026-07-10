@@ -17,12 +17,16 @@
 | 功能 | 描述 |
 |------|------|
 | 🌍 **双语字幕** | 同时显示视频原文字幕 + AI 翻译字幕 |
+| 🧭 **三种显示模式** | 可随时切换原文、双语、仅译文，并支持顶部/底部位置 |
+| ⏱️ **准确跟随时间** | 保留人工字幕时间，滚动字幕不会提前显示后文，跳转后快速定位 |
 | 🎨 **生词高亮** | 已掌握（绿色）、生词（橙色）、学习中（蓝色虚线）|
 | ⏸️ **点击暂停** | 点击字幕区域暂停/恢复视频 |
 | 📖 **单词弹窗** | 点击任意单词，显示发音 / 词性 / 释义 / 例句解释 |
 | ✅ **词汇追踪** | 标记单词为"已掌握"或"学习中"，持久保存 |
 | 📝 **字幕面板** | 右侧可滑动字幕列表，点击跳转到对应时间 |
 | 🤖 **AI 翻译** | 支持 OpenAI / 任意兼容 API / 本地 Ollama 大模型 |
+| 🛟 **可用性回退** | 翻译不可用时保留原文，并在播放器与弹窗中说明状态 |
+| 📱 **多页面支持** | 支持普通视频、Shorts、嵌入式播放器和页面内切换 |
 | 📚 **词汇管理** | 统计、导出、导入词汇表（JSON 格式）|
 | 🚫 **零成本可选** | 配置本地大模型后完全免费使用 |
 
@@ -45,26 +49,17 @@ git clone https://github.com/YOUR_USERNAME/YouTubeTranslator.git
 4. 选择项目文件夹 `YouTubeTranslator`
 5. 扩展加载成功，首次安装会自动打开设置页面
 
-### 3. 配置 AI 翻译（必须）
+### 3. 选择翻译方式（AI 可选）
 
-点击浏览器右上角的扩展图标 → **「Full Settings」** 进入完整设置页面，选择以下任一翻译方式：
+首次安装默认使用 YouTube 自带翻译，不要求本地模型或 API。若希望获得更稳定的上下文翻译，可点击浏览器右上角的扩展图标 → **「Full Settings」**，开启 AI Translation 并选择以下任一方式。
 
 ---
 
-## 🤖 AI 翻译配置 / AI Translation Setup
+## 🤖 可选的 AI 翻译配置 / Optional AI Translation Setup
 
 ### 方式一：云端 API（推荐新手）
 
-在设置页选择 **「Cloud API」**，填入以下信息：
-
-| 服务商 | API Endpoint | Model | 费用参考 |
-|--------|-------------|-------|---------|
-| **OpenAI** | `https://api.openai.com/v1/chat/completions` | `gpt-4o-mini` | ~$0.15/百万 token |
-| **DeepSeek** ⭐ | `https://api.deepseek.com/v1/chat/completions` | `deepseek-chat` | ~¥1/百万 token（极低）|
-| **通义千问** | `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions` | `qwen-plus` | ~¥0.8/百万 token |
-| **Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `gemini-2.0-flash` | 免费额度充足 |
-
-> 💡 **推荐 DeepSeek**：翻译质量接近 GPT-4o，价格约为其 1/10，1 元人民币可翻译数千条字幕。
+在设置页选择 **「Cloud API」**，填写服务商提供的 API 地址、密钥与模型名称。插件支持 OpenAI 兼容接口。配置后先点击 **Test Connection**；价格和模型可用性以各服务商的最新说明为准。
 
 ---
 
@@ -149,9 +144,11 @@ YouTubeTranslator/
 ├── background/
 │   └── background.js      # Service Worker，处理安装和消息路由
 ├── content/
+│   ├── inject.js          # 尽早捕获字幕响应，并支持初始化后重放
 │   ├── content.js         # 内容脚本主入口，处理 YouTube SPA 导航
 │   ├── content.css        # 字幕、弹窗、面板样式（暗色主题）
 │   ├── subtitle.js        # 字幕拦截、双语渲染、词汇高亮
+│   ├── subtitleOptimizer.js # 字幕时序、轨道选择、翻译调度与状态管理
 │   ├── panel.js           # 右侧字幕面板 + 词汇本标签页
 │   └── wordPopup.js       # 单词释义弹窗组件
 ├── lib/
@@ -167,6 +164,8 @@ YouTubeTranslator/
 │   ├── options.css        # 设置页样式
 │   └── options.js         # 设置页逻辑（API 测试、词汇管理）
 ├── icons/                  # 扩展图标（16/48/128px）
+├── tests/                  # 字幕时序、翻译可靠性、设置与清单检查
+├── package.json            # 一键运行全部检查
 └── _locales/
     ├── en/messages.json   # 英文本地化
     └── zh_CN/messages.json # 中文本地化
@@ -176,14 +175,14 @@ YouTubeTranslator/
 
 ## 🎮 使用方法 / How to Use
 
-1. **打开 YouTube 视频**，确保视频有英文字幕（点击 CC 按钮开启）
-2. **字幕自动替换**：插件会拦截原始字幕并显示双语版本
+1. **打开 YouTube 视频或 Shorts**，确保视频有字幕并开启 CC
+2. **字幕自动显示**：插件会读取当前字幕轨并按所选模式显示
 3. **点击字幕区域** → 视频暂停/播放
 4. **点击单词** → 视频暂停 + 弹出释义窗口
    - 查看发音、词性、翻译、解释
    - 点击 **✓ Mastered** 标记为已掌握（绿色）
    - 点击 **📖 Learning** 标记为学习中（蓝色）
-5. **右侧面板**：点击播放器中的列表按钮切换显示
+5. **字幕面板**：点击播放器中的列表按钮切换显示
    - **Subtitles 标签**：完整字幕列表，点击跳转
    - **Vocabulary 标签**：查看所有标记的单词
 
@@ -211,6 +210,9 @@ YouTubeTranslator/
 | API Endpoint | API 地址（支持任何 OpenAI 兼容接口）|
 | Model | 模型名称 |
 | Font Size | 字幕字体大小（12-28px）|
+| Display Mode | 原文 / 双语 / 仅译文 |
+| Subtitle Position | 字幕显示在播放器顶部或底部 |
+| Background Opacity | 字幕背景透明度 |
 | Auto Translate | 是否自动翻译每条字幕 |
 | Show Panel | 启动时是否自动显示字幕面板 |
 
@@ -219,10 +221,10 @@ YouTubeTranslator/
 ## 🔧 常见问题 / FAQ
 
 **Q：字幕没有出现？**
-A：请确保：（1）在 YouTube 视频页面（URL 含 `/watch`）；（2）视频本身有字幕且已开启（CC 按钮）；（3）扩展已启用（工具栏弹窗中开关为开）
+A：请确保：（1）当前是普通视频、Shorts 或嵌入式播放器；（2）视频本身有字幕且已开启 CC；（3）扩展已启用。弹窗会说明当前是在等待字幕、CC 已关闭、视频无字幕，还是翻译服务不可用。
 
 **Q：翻译不出来 / 显示 Translation Error？**
-A：检查设置页的 API 配置，点击 「Test Connection」查看具体错误。本地 LLM 请确认 Ollama 服务已运行（`ollama serve`）
+A：先看播放器或弹窗中的状态提示。若开启了 AI，检查设置页的配置并点击 **Test Connection**；本地模型还需确认 Ollama 已运行。翻译不可用时插件会继续显示原文。
 
 **Q：Ollama 没有使用 GPU？**
 A：运行 `ollama run qwen2.5:14b` 时查看任务管理器 GPU 占用。AMD 用户 Windows 下可能需要更新驱动或改用 Linux
@@ -232,6 +234,18 @@ A：32b 模型计算量大属正常，可切换到 14b 降低负载
 
 **Q：能换其他翻译模型吗？**
 A：可以！任何 Ollama 支持的模型都能用，在设置中修改 Model Name 即可。推荐翻译模型：`qwen2.5:14b`、`qwen2.5:32b`、`gemma2:9b`
+
+---
+
+## ✅ 本地检查 / Verification
+
+修改代码后，在项目目录运行：
+
+```bash
+npm run check
+```
+
+它会检查扩展引用的文件、脚本语法，以及字幕时序、翻译失败恢复、任务取消、缓存、设置迁移和 Shorts 字幕重放等关键场景。
 
 ---
 

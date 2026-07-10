@@ -76,7 +76,7 @@
                         <select id="proficiencyLevel" class="form-select">
                             <option value="none">👶 Zero Basics (None)</option>
                             <option value="primary">🎒 小学词汇 (Primary School)</option>
-                            <option value="middle">🏫 初中词汇 (Middle School)</option>
+                            <option value="middle" selected>🏫 初中词汇 (Middle School)</option>
                             <option value="high">🎓 高中词汇 (High School)</option>
                             <option value="cet4">📝 大学英语四级 (CET-4)</option>
                             <option value="cet6">🏆 大学英语六级 (CET-6)</option>
@@ -96,7 +96,7 @@
                         <label class="toggle-label">
                             <span>Use AI Translation (If disabled, uses YouTube's native auto-translate)</span>
                             <label class="toggle-switch">
-                                <input type="checkbox" id="useAITranslation" checked>
+                                <input type="checkbox" id="useAITranslation">
                                 <span class="toggle-slider"></span>
                             </label>
                         </label>
@@ -106,7 +106,7 @@
                         <label class="form-label">Translation Provider</label>
                         <div class="provider-options">
                             <label class="provider-option">
-                                <input type="radio" name="aiProvider" value="openai" checked>
+                                <input type="radio" name="aiProvider" value="openai">
                                 <div class="provider-card">
                                     <span class="provider-icon">☁️</span>
                                     <span class="provider-name">Cloud API</span>
@@ -122,7 +122,7 @@
                                 </div>
                             </label>
                             <label class="provider-option">
-                                <input type="radio" name="aiProvider" value="local">
+                                <input type="radio" name="aiProvider" value="local" checked>
                                 <div class="provider-card">
                                     <span class="provider-icon">💻</span>
                                     <span class="provider-name">Local LLM</span>
@@ -133,7 +133,7 @@
                     </div>
 
                     <!-- Cloud API Settings -->
-                    <div id="cloudSettings" class="provider-settings">
+                    <div id="cloudSettings" class="provider-settings" style="display: none;">
                         <div class="form-group">
                             <label class="form-label" for="apiKey">API Key</label>
                             <div class="input-with-icon">
@@ -155,7 +155,7 @@
                     </div>
 
                     <!-- Local LLM Settings -->
-                    <div id="localSettings" class="provider-settings" style="display: none;">
+                    <div id="localSettings" class="provider-settings">
                         <div class="form-row">
                             <div class="form-group">
                                 <label class="form-label" for="localEndpoint">Local Endpoint</label>
@@ -177,7 +177,7 @@
                     <button id="testConnection" class="btn btn-outline">
                         <span class="btn-icon">🔌</span> Test Connection
                     </button>
-                    <div id="testResult" class="test-result" style="display: none;"></div>
+                <div id="testResult" class="test-result" style="display: none;"></div>
                 </div>
             </section>
 
@@ -188,9 +188,35 @@
                     <h2 class="card-title">Display Settings</h2>
                 </div>
                 <div class="card-body">
+                    <div id="subtitlePreview" class="subtitle-preview" data-mode="bilingual" data-position="bottom" aria-label="Subtitle appearance preview">
+                        <div class="preview-video">
+                            <span class="preview-label">LIVE PREVIEW</span>
+                            <div class="preview-captions">
+                                <div class="preview-line preview-original" dir="auto">
+                                    <span class="preview-known">Known</span>
+                                    <span class="preview-unknown">new words</span>
+                                    stay easy to read.
+                                </div>
+                                <div class="preview-line preview-translation" dir="auto">The translation appears here.</div>
+                            </div>
+                        </div>
+                    </div>
                     <div class="form-group">
                         <label class="form-label">Font Size: <span id="fontSizeValue">16</span>px</label>
                         <input type="range" id="fontSize" class="form-range" min="12" max="28" value="16">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label" for="subtitlePosition">Subtitle Position</label>
+                            <select id="subtitlePosition" class="form-select">
+                                <option value="bottom">Bottom</option>
+                                <option value="top">Top</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="subtitleBackgroundOpacity">Background: <span id="backgroundOpacityValue">84</span>%</label>
+                            <input type="range" id="subtitleBackgroundOpacity" class="form-range" min="0" max="100" value="84">
+                        </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group">
@@ -208,50 +234,40 @@
                             </div>
                         </div>
                     </div>
+                    <fieldset class="form-group display-mode-fieldset">
+                        <legend class="form-label">Subtitle Display</legend>
+                        <div class="display-mode-options">
+                            <label><input type="radio" name="subtitleDisplayMode" value="original"><span>Original</span></label>
+                            <label><input type="radio" name="subtitleDisplayMode" value="bilingual" checked><span>Bilingual</span></label>
+                            <label><input type="radio" name="subtitleDisplayMode" value="translated"><span>Translation</span></label>
+                        </div>
+                    </fieldset>
                     <div class="form-group toggle-group">
-                        <label class="toggle-label">
-                            <span>Show original subtitle</span>
+                        <div class="toggle-label">
+                            <label for="autoTranslate">Auto-translate subtitles</label>
                             <label class="toggle-switch">
-                                <input type="checkbox" id="showOriginal" checked>
-                                <span class="toggle-slider"></span>
+                                <input type="checkbox" id="autoTranslate" checked aria-label="Auto-translate subtitles">
+                                <span class="toggle-slider" aria-hidden="true"></span>
                             </label>
-                        </label>
+                        </div>
                     </div>
                     <div class="form-group toggle-group">
-                        <label class="toggle-label">
-                            <span>Show translated subtitle</span>
+                        <div class="toggle-label">
+                            <label for="enableLogging">Enable translation logging (Record per video)</label>
                             <label class="toggle-switch">
-                                <input type="checkbox" id="showTranslation" checked>
-                                <span class="toggle-slider"></span>
+                                <input type="checkbox" id="enableLogging" checked aria-label="Enable translation logging">
+                                <span class="toggle-slider" aria-hidden="true"></span>
                             </label>
-                        </label>
+                        </div>
                     </div>
                     <div class="form-group toggle-group">
-                        <label class="toggle-label">
-                            <span>Auto-translate subtitles</span>
+                        <div class="toggle-label">
+                            <label for="showPanel">Show subtitle panel on startup</label>
                             <label class="toggle-switch">
-                                <input type="checkbox" id="autoTranslate" checked>
-                                <span class="toggle-slider"></span>
+                                <input type="checkbox" id="showPanel" aria-label="Show subtitle panel on startup">
+                                <span class="toggle-slider" aria-hidden="true"></span>
                             </label>
-                        </label>
-                    </div>
-                    <div class="form-group toggle-group">
-                        <label class="toggle-label">
-                            <span>Enable translation logging (Record per video)</span>
-                            <label class="toggle-switch">
-                                <input type="checkbox" id="enableLogging" checked>
-                                <span class="toggle-slider"></span>
-                            </label>
-                        </label>
-                    </div>
-                    <div class="form-group toggle-group">
-                        <label class="toggle-label">
-                            <span>Show subtitle panel on startup</span>
-                            <label class="toggle-switch">
-                                <input type="checkbox" id="showPanel" checked>
-                                <span class="toggle-slider"></span>
-                            </label>
-                        </label>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -301,7 +317,7 @@
                 <button id="saveSettings" class="btn btn-primary btn-large">
                     <span class="btn-icon">💾</span> Save Settings
                 </button>
-                <div id="saveMessage" class="save-message" style="display: none;">
+                <div id="saveMessage" class="save-message" style="display: none;" role="status" aria-live="polite">
                     ✓ Settings saved successfully!
                 </div>
             </div>

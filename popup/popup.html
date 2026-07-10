@@ -1,126 +1,118 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>YouTube Bilingual Subtitles</title>
   <link rel="stylesheet" href="popup.css">
 </head>
-
 <body>
   <div class="popup-container">
     <header class="popup-header">
-      <div class="popup-logo">
-        <img src="../icons/icon48.png" alt="Logo" width="28" height="28">
+      <div class="popup-brand">
+        <img src="../icons/icon48.png" alt="" width="32" height="32">
         <div>
-          <h1 class="popup-title">YT Bilingual</h1>
-          <span class="popup-version">v1.0.0</span>
+          <h1>YT Bilingual</h1>
+          <span id="versionText">v1.1.0</span>
         </div>
       </div>
-      <label class="toggle-switch">
+      <label class="switch" title="Enable extension">
+        <span class="sr-only">Enable bilingual subtitles</span>
         <input type="checkbox" id="enableToggle" checked>
-        <span class="toggle-slider"></span>
+        <span aria-hidden="true"></span>
       </label>
     </header>
 
-    <div class="popup-body">
-      <!-- Status -->
-      <div class="popup-status" id="statusSection">
-        <div class="status-dot"></div>
-        <span class="status-text">Ready</span>
-      </div>
+    <main class="popup-body">
+      <section class="status-card" id="statusSection" data-state="waiting" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <div class="status-copy">
+          <strong id="statusTitle">Checking video...</strong>
+          <span id="statusDetail"></span>
+        </div>
+        <button type="button" id="statusAction" class="text-button" hidden></button>
+      </section>
 
-      <!-- Language Settings -->
-      <div class="popup-section">
-        <label class="popup-label">Target Language (Learning)</label>
-        <select id="targetLanguage" class="popup-select">
-          <option value="en">English</option>
-          <option value="zh">中文</option>
-          <option value="ja">日本語</option>
-          <option value="ko">한국어</option>
-          <option value="es">Español</option>
-          <option value="fr">Français</option>
-          <option value="de">Deutsch</option>
-          <option value="ru">Русский</option>
-          <option value="pt">Português</option>
-          <option value="it">Italiano</option>
-          <option value="ar">العربية</option>
-          <option value="hi">हिन्दी</option>
-          <option value="th">ไทย</option>
-          <option value="vi">Tiếng Việt</option>
-          <option value="tr">Türkçe</option>
+      <section class="popup-section">
+        <h2>Subtitle display</h2>
+        <div class="mode-control" id="displayMode" role="group" aria-label="Subtitle display mode">
+          <button type="button" data-mode="original" aria-pressed="false">Original</button>
+          <button type="button" class="active" data-mode="bilingual" aria-pressed="true">Bilingual</button>
+          <button type="button" data-mode="translated" aria-pressed="false">Translation</button>
+        </div>
+      </section>
+
+      <section class="popup-section compact-grid">
+        <div>
+          <label for="targetLanguage">Caption language</label>
+          <select id="targetLanguage">
+            <option value="en">English</option>
+            <option value="zh">Chinese</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="ru">Russian</option>
+            <option value="pt">Portuguese</option>
+            <option value="it">Italian</option>
+            <option value="ar">Arabic</option>
+            <option value="hi">Hindi</option>
+            <option value="th">Thai</option>
+            <option value="vi">Vietnamese</option>
+            <option value="tr">Turkish</option>
+          </select>
+        </div>
+        <div>
+          <label for="nativeLanguage">Translate to</label>
+          <select id="nativeLanguage">
+            <option value="zh">Chinese</option>
+            <option value="en">English</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="ru">Russian</option>
+            <option value="pt">Portuguese</option>
+            <option value="it">Italian</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="popup-section">
+        <label for="proficiencyLevel">Vocabulary level</label>
+        <select id="proficiencyLevel">
+          <option value="none">No automatic known words</option>
+          <option value="primary">Primary school</option>
+          <option value="middle" selected>Middle school</option>
+          <option value="high">High school</option>
+          <option value="cet4">CET-4</option>
+          <option value="cet6">CET-6</option>
         </select>
-      </div>
+      </section>
 
-      <div class="popup-section">
-        <label class="popup-label">Native Language</label>
-        <select id="nativeLanguage" class="popup-select">
-          <option value="zh">中文</option>
-          <option value="en">English</option>
-          <option value="ja">日本語</option>
-          <option value="ko">한국어</option>
-          <option value="es">Español</option>
-          <option value="fr">Français</option>
-          <option value="de">Deutsch</option>
-          <option value="ru">Русский</option>
-          <option value="pt">Português</option>
-          <option value="it">Italiano</option>
-        </select>
-      </div>
-
-      <div class="popup-section">
-        <label class="popup-label">Proficiency Level</label>
-        <select id="proficiencyLevel" class="popup-select">
-          <option value="none">Zero Basics</option>
-          <option value="primary">小学 (Primary)</option>
-          <option value="middle">初中 (Middle)</option>
-          <option value="high">高中 (High)</option>
-          <option value="cet4">四级 (CET-4)</option>
-          <option value="cet6">六级 (CET-6)</option>
-        </select>
-      </div>
-
-      <div class="popup-section"
-        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <label class="popup-label" style="margin-bottom: 0;">Use AI Translation</label>
-        <label class="toggle-switch" style="scale: 0.8; transform-origin: right center;">
-          <input type="checkbox" id="useAITranslation" checked>
-          <span class="toggle-slider"></span>
+      <section class="popup-section setting-list">
+        <label class="setting-row" for="useAITranslation">
+          <span><strong>AI translation</strong><small>Off uses YouTube translation</small></span>
+          <input class="switch-input" type="checkbox" id="useAITranslation">
         </label>
-      </div>
-
-      <div class="popup-section"
-        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <label class="popup-label" style="margin-bottom: 0;">🌐 Webpage Translation</label>
-        <label class="toggle-switch" style="scale: 0.8; transform-origin: right center;">
-          <input type="checkbox" id="webPageTranslation">
-          <span class="toggle-slider"></span>
+        <label class="setting-row" for="webPageTranslation">
+          <span><strong>Webpage translation</strong><small>Translate supported pages</small></span>
+          <input class="switch-input" type="checkbox" id="webPageTranslation">
         </label>
-      </div>
+      </section>
 
-      <!-- Quick Actions -->
       <div class="popup-actions">
-        <button id="togglePanel" class="popup-btn popup-btn-secondary">
-          <span class="btn-icon">📝</span> Toggle Panel
-        </button>
-        <button id="openSettings" class="popup-btn popup-btn-primary">
-          <span class="btn-icon">⚙️</span> Full Settings
-        </button>
+        <button type="button" id="togglePanel" class="button secondary">Subtitle panel</button>
+        <button type="button" id="openSettings" class="button primary">Full settings</button>
       </div>
 
-      <!-- Stats -->
-      <div class="popup-stats">
-        <div class="stat-item">
-          <span class="stat-value" id="learningStat">0</span>
-          <span class="stat-label">Learning</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-value" id="masteredStat">0</span>
-          <span class="stat-label">Mastered</span>
-        </div>
+      <div class="popup-stats" aria-label="Vocabulary statistics">
+        <div><strong id="learningStat">0</strong><span>Learning</span></div>
+        <div><strong id="masteredStat">0</strong><span>Mastered</span></div>
       </div>
-    </div>
+    </main>
   </div>
 
   <script src="../lib/wordlevels.js"></script>
@@ -128,5 +120,4 @@
   <script src="../lib/storage.js"></script>
   <script src="popup.js"></script>
 </body>
-
 </html>
