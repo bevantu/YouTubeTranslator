@@ -1387,12 +1387,14 @@ const SubtitleManager = {
         const entries = Array.from(this.logBuffer.entries()).map(([original, val]) => ({
             original,
             translated: val.translated,
-            time: val.time
+            time: Number(val.time ?? val.timeMs ?? 0)
         }));
         entries.sort((a, b) => a.time - b.time);
 
         const title = document.title.replace(/ - YouTube$/, '') || 'Video Log';
-        const header = `Video: ${title}\nURL: ${window.location.href}\nGenerated at: ${new Date().toLocaleString()}\n` + "=".repeat(60) + "\n\n";
+        const provider = this.settings.aiProvider === 'local' ? 'Local LLM' : 'Cloud API';
+        const model = this.settings.aiProvider === 'local' ? this.settings.localModel : this.settings.apiModel;
+        const header = `Video: ${title}\nURL: ${window.location.href}\nGenerated at: ${new Date().toLocaleString()}\nTranslation: ${this.settings.targetLanguage} → ${this.settings.nativeLanguage} | ${provider} | ${model || 'unknown model'}\n` + "=".repeat(60) + "\n\n";
         const debugHeader = this.debugEvents.length
             ? '[Debug Trace]\n' + this.debugEvents.join('\n') + '\n\n' + '='.repeat(60) + '\n\n'
             : '';

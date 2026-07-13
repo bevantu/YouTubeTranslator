@@ -66,6 +66,47 @@
         }));
     }
 
+    function parsePlayerResponse(value) {
+        if (!value) return null;
+        if (typeof value === 'string') {
+            try { return JSON.parse(value); } catch { return null; }
+        }
+        return typeof value === 'object' ? value : null;
+    }
+
+    function getPlayerResponses() {
+        const candidates = [
+            window.ytInitialPlayerResponse,
+            window.ytplayer?.config?.args?.player_response
+        ];
+
+        try {
+            candidates.push(document.querySelector('#movie_player')?.getPlayerResponse?.());
+        } catch { /* YouTube may not have exposed the player API yet. */ }
+
+        return candidates.map(parsePlayerResponse).filter(Boolean);
+    }
+
+    function getCaptionTrackStatus(requestedVideoId = '') {
+        for (const response of getPlayerResponses()) {
+            const responseVideoId = response.videoDetails?.videoId || '';
+            if (requestedVideoId && responseVideoId && responseVideoId !== requestedVideoId) continue;
+
+            const tracks = response.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+            return {
+                videoId: responseVideoId || requestedVideoId,
+                available: Array.isArray(tracks) && tracks.length > 0
+            };
+        }
+        return null;
+    }
+
+    function dispatchCaptionTrackStatus(requestedVideoId = '') {
+        const detail = getCaptionTrackStatus(requestedVideoId);
+        if (!detail) return;
+        window.dispatchEvent(new CustomEvent('__yb_caption_tracks__', { detail }));
+    }
+
     // The isolated content script may initialize after YouTube already fetched
     // captions. Re-deliver matching cached responses on request.
     window.addEventListener('__yb_timedtext_request__', (event) => {
@@ -75,6 +116,13 @@
                 dispatch(cached.text, cached.url, true, cached.videoId);
             }
         }
+    });
+
+    // The content script cannot read YouTube's player response directly. Keep
+    // the CC prompt honest by reporting whether this video actually has a
+    // timed-text track before asking the user to enable captions.
+    window.addEventListener('__yb_caption_tracks_request__', (event) => {
+        dispatchCaptionTrackStatus(event.detail?.videoId || '');
     });
 
     // ── Intercept fetch ───────────────────────────────────────────────────────

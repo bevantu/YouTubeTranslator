@@ -18,7 +18,7 @@ const LANG_NAMES = {
     nl: 'Dutch', sv: 'Swedish', uk: 'Ukrainian', id: 'Indonesian'
 };
 
-const TRANSLATION_RULES_VERSION = '2026-07-10.1';
+const TRANSLATION_RULES_VERSION = '2026-07-13.4';
 const TRANSLATION_CACHE_PREFIX = 'yttr_v2_';
 const TRANSLATION_CACHE_INDEX_KEY = '__yb_translation_cache_index_v2';
 const TRANSLATION_CACHE_MAX_ENTRIES = 400;
@@ -459,7 +459,25 @@ function buildRecentContextBlock(context = []) {
         .slice(-5)
         .map(c => `  [${c.original}] → [${c.translated}]`)
         .join('\n');
-    return `\nRecent subtitles for context (do NOT retranslate):\n${lines}\n`;
+    return `\nRecent subtitles for terminology, pronouns, and tone only (do NOT retranslate or copy facts from them):\n${lines}\n`;
+}
+
+function buildVideoTopicBlock(settings = {}) {
+    const title = String(settings.translationVideoTitle || '')
+        .replace(/\s+-\s+YouTube\s*$/i, '')
+        .trim()
+        .slice(0, 200);
+    return title ? `\nVideo title/topic (context only): ${title}\n` : '';
+}
+
+function buildSubtitleQualityRules(nativeLanguageName) {
+    return `SUBTITLE QUALITY RULES:
+- Write concise, natural spoken ${nativeLanguageName}; understand the complete thought before wording each subtitle.
+- Preserve the speaker's intent, who did what, questions, negation, conditions, comparisons, numbers, units, and list items.
+- Keep names, brands, product names, acronyms, code identifiers, commands, flags, paths, filenames, URLs, and keyboard shortcuts unchanged unless there is a well-established localized name.
+- Keep terminology and names consistent with accepted translations in the recent context and in this block.
+- The source may come from speech recognition. Correct only an obvious recognition error supported by nearby source text and established terminology; otherwise translate conservatively without guessing.
+- Context is only for disambiguation, terminology, pronouns, and tone. Never add context-only facts to the requested subtitle.`;
 }
 
 function stableSerialize(value) {
@@ -810,7 +828,11 @@ function extractNumericTokens(text) {
 }
 
 function extractTechnicalTokens(text) {
-    const candidates = String(text || '').match(/\b(?:[A-Z]{2,}|[A-Za-z]+[A-Z][A-Za-z0-9]*|[A-Za-z]+\d+[A-Za-z0-9]*|\w+\.\w{2,5})\b/g) || [];
+    // Acronyms such as AI, API, UI, and CLI may be translated naturally into
+    // the target language, so requiring their literal spelling rejects valid
+    // translations. Only guard tokens that behave like identifiers: mixed-case
+    // product names, model/version identifiers containing digits, and file names.
+    const candidates = String(text || '').match(/\b(?:[A-Z]?[a-z]+(?:[A-Z][A-Za-z0-9]*)+|[A-Za-z]+[-_.]?\d+[A-Za-z0-9._-]*|\w+\.\w{2,5})\b/g) || [];
     return Array.from(new Set(candidates.filter(token => token.length > 1)));
 }
 
@@ -829,16 +851,21 @@ function validateTranslationCandidate(segment, translation, targetLang, nativeLa
     const source = String(segment?.text ?? segment ?? '').trim();
     const translated = normalizeTranslationText(translation);
     const reasons = [];
+    const warnings = [];
 
     if (!translated) reasons.push('empty');
     if (options.truncated) reasons.push('truncated');
-    if (!source) return { valid: Boolean(translated), translation: translated, reasons };
-    if (!translated) return { valid: false, translation: '', reasons };
+    if (!source) return { valid: Boolean(translated), translation: translated, reasons, warnings };
+    if (!translated) return { valid: false, translation: '', reasons, warnings };
 
     const sourceComparable = normalizeComparableText(source);
     const translatedComparable = normalizeComparableText(translated);
     const sourceAlphabetic = source.match(/\p{L}/gu) || [];
-    if (targetLang !== nativeLang && sourceAlphabetic.length > 2 && sourceComparable === translatedComparable) {
+    const sourceWords = source.match(/\p{L}+/gu) || [];
+    const hasNaturalLanguageWords = sourceWords.some(word =>
+        word === word.toLocaleLowerCase() || /^[A-Z][a-z]{1,}$/.test(word)
+    );
+    if (targetLang !== nativeLang && hasNaturalLanguageWords && sourceComparable === translatedComparable) {
         reasons.push('source-repeated');
     }
 
@@ -851,7 +878,7 @@ function validateTranslationCandidate(segment, translation, targetLang, nativeLa
     const translatedLower = translated.toLocaleLowerCase();
     for (const token of extractTechnicalTokens(source)) {
         if (!translatedLower.includes(token.toLocaleLowerCase())) {
-            reasons.push(`missing-token:${token}`);
+            warnings.push(`missing-token:${token}`);
         }
     }
 
@@ -860,18 +887,19 @@ function validateTranslationCandidate(segment, translation, targetLang, nativeLa
     const translatedLetters = translated.match(/[\p{L}\p{N}]/gu) || [];
     const mostlyTechnical = extractTechnicalTokens(source).join('').length >= sourceLetters.length * 0.7;
     if (sourceAlphabetic.length >= 4 && !mostlyTechnical && scriptMatches.length / Math.max(1, translatedLetters.length) < 0.15) {
-        reasons.push('target-language-mismatch');
+        warnings.push('target-language-mismatch');
     }
 
     const sourceLength = source.replace(/\s/g, '').length;
     const translatedLength = translated.replace(/\s/g, '').length;
     if (sourceLength >= 12) {
         const ratio = translatedLength / sourceLength;
-        if (ratio < 0.08) reasons.push('too-short');
-        if (ratio > 8 || translatedLength > 600) reasons.push('too-long');
+        if (ratio < 0.08) warnings.push('too-short');
+        if (ratio > 8) warnings.push('too-long-ratio');
     }
+    if (translatedLength > 600) reasons.push('too-long');
 
-    return { valid: reasons.length === 0, translation: translated, reasons };
+    return { valid: reasons.length === 0, translation: translated, reasons, warnings };
 }
 
 function validateTranslationMap(segments, result, targetLang, nativeLang, metadata = {}) {
@@ -898,7 +926,10 @@ async function handleTranslate(text, targetLang, nativeLang, settings, context =
     if (!text || !text.trim()) return '';
 
     const cacheIdentity = createTranslationCacheIdentity(
-        'single', text, targetLang, nativeLang, settings, context, { mode }
+        'single', text, targetLang, nativeLang, settings, context, {
+            mode,
+            videoTitle: String(settings?.translationVideoTitle || '')
+        }
     );
     if (!skipCache) {
         const cached = await readTranslationCache(cacheIdentity, requestOptions);
@@ -907,9 +938,10 @@ async function handleTranslate(text, targetLang, nativeLang, settings, context =
 
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
+    const qualityRules = buildSubtitleQualityRules(nName);
 
     // Build context block from recent subtitles
-    const contextLines = buildRecentContextBlock(context);
+    const contextLines = buildVideoTopicBlock(settings) + buildRecentContextBlock(context);
     const contextBlock = contextLines ? `\n\n${contextLines}` : '';
 
     let system, userMsg, translation;
@@ -918,7 +950,9 @@ async function handleTranslate(text, targetLang, nativeLang, settings, context =
         // ── Fast mode ────────────────────────────────────────────────────
         // For real-time fallback when subtitle is already on screen.
         // Single-pass, minimal prompt, strict token cap.
-        system = `Translate ${tName} subtitle to natural spoken ${nName}. Output ONLY the translation.`;
+        system = `Translate the requested ${tName} subtitle to ${nName}.
+${qualityRules}
+Output ONLY the final translation on one line.`;
         userMsg = `${contextBlock}\n${text}`;
 
         if (settings.aiProvider === 'local') {
@@ -928,18 +962,10 @@ async function handleTranslate(text, targetLang, nativeLang, settings, context =
         }
     } else {
         // ── Quality mode (default) ────────────────────────────────────────
-        // Used during pre-translation where we have plenty of time.
-        // Translate-Reflect-Refine for natural, contextual output.
+        // Used during pre-translation where we have enough time for a polished result.
         system = `You are an expert subtitle translator (${tName} to ${nName}).
-Use the Translate-Reflect-Refine workflow:
-1. Initial Translation: translate accurately and colloquially.
-2. Reflection: critique the flow, tone, and conciseness.
-3. Refined Translation: produce the final polished subtitle.
-
-CRITICAL RULES:
-- Natural spoken ${nName}, NOT word-for-word.
-- Output the TRANSLATION ONLY inside <FINAL></FINAL> tags. No line breaks in the translation.
-- Keep the translation on a single line. Do NOT insert \\n or line breaks in the final output.`;
+${qualityRules}
+Output ONLY the final translation on one line. Do not show analysis, alternatives, labels, or notes.`;
         userMsg = `${contextBlock}\nTranslate this subtitle:\n${text}`;
 
         if (settings.aiProvider === 'local') {
@@ -995,7 +1021,9 @@ async function handleBlockTranslate(segments, targetLang, nativeLang, settings, 
         displayBreakReason: s.displayBreakReason || ''
     })));
     const cacheIdentity = createTranslationCacheIdentity(
-        'numbered-block', blockText, targetLang, nativeLang, settings, context
+        'numbered-block', blockText, targetLang, nativeLang, settings, context, {
+            videoTitle: String(settings?.translationVideoTitle || '')
+        }
     );
     const cached = await readTranslationCache(cacheIdentity, requestOptions);
     if (cached) {
@@ -1005,6 +1033,7 @@ async function handleBlockTranslate(segments, targetLang, nativeLang, settings, 
 
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
+    const qualityRules = buildSubtitleQualityRules(nName);
 
     // Build numbered input lines with neighboring source-only hints.
     const numberedLines = segments.map(s => {
@@ -1015,22 +1044,17 @@ async function handleBlockTranslate(segments, targetLang, nativeLang, settings, 
         return lines.join('\n');
     }).join('\n\n');
 
-    const contextBlock = buildRecentContextBlock(context);
+    const contextBlock = buildVideoTopicBlock(settings) + buildRecentContextBlock(context);
 
     const system = `You are an expert subtitle translator (${tName} to ${nName}).
-Each numbered item [N] is a subtitle segment shown at a different time.
-Translate EACH item separately and preserve the numbering.
+Each numbered item [N] is a semantic subtitle unit reconstructed from adjacent source timings.
+Translate EACH semantic unit naturally and preserve the numbering.
 
-CRITICAL RULES:
-- Translate into natural spoken ${nName}, but be lossless with meaning.
-- NEVER summarize, compress away, or omit concrete details.
-- Preserve all list items, entities, numbers, proper nouns, and parallel structures.
-- If the source says "PDFs or code files or entire books", the translation must include all three items.
-- CURRENT is the only text to translate.
-- PREV_SOURCE and NEXT_SOURCE are context hints only. Use them only to resolve fragment meaning.
-- Do NOT pull extra meaning from PREV_SOURCE or NEXT_SOURCE into the current line.
-- If CURRENT is a fragment, keep the translation fragmentary too.
-- Do NOT merge or split items. Keep 1:1 mapping.
+${qualityRules}
+- Treat the numbered items in order as continuous speech, but write each CURRENT unit as complete, idiomatic ${nName} rather than copying English word order or source timing breaks.
+- Reorder words and clauses freely inside CURRENT when ${nName} requires it.
+- PREV_SOURCE and NEXT_SOURCE are context hints only. Use them to resolve meaning, pronouns, and terminology without adding their facts to CURRENT.
+- Return exactly one complete translation for every semantic unit.
 - Output ONLY the translations inside <TRANSLATIONS></TRANSLATIONS> tags.
 - Format: one line per item, exactly like [1] 翻译内容`;
 
@@ -1166,7 +1190,9 @@ async function handleStructuredBlockTranslate(segments, targetLang, nativeLang, 
         displayBreakReason: s.displayBreakReason || ''
     })));
     const cacheIdentity = createTranslationCacheIdentity(
-        'structured-block', stableText, targetLang, nativeLang, settings, context
+        'structured-block', stableText, targetLang, nativeLang, settings, context, {
+            videoTitle: String(settings?.translationVideoTitle || '')
+        }
     );
     const cached = await readTranslationCache(cacheIdentity, requestOptions);
     if (cached) {
@@ -1176,7 +1202,8 @@ async function handleStructuredBlockTranslate(segments, targetLang, nativeLang, 
 
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
-    const contextBlock = buildRecentContextBlock(context);
+    const qualityRules = buildSubtitleQualityRules(nName);
+    const contextBlock = buildVideoTopicBlock(settings) + buildRecentContextBlock(context);
 
     const payload = {
         items: segments.map(s => ({
@@ -1191,33 +1218,47 @@ async function handleStructuredBlockTranslate(segments, targetLang, nativeLang, 
     const system = `You are an expert subtitle translator (${tName} to ${nName}).
 Return JSON only. No markdown. No explanations.
 Schema exactly: {"items":[{"id":"same id from input","translation":"translated subtitle"}]}
-Rules:
+${qualityRules}
 - Return one item for every input id, preserving the exact id string.
-- Translate CURRENT only. PREV_SOURCE and NEXT_SOURCE are context hints only.
-- Do not merge, split, summarize, omit concrete details, or add context-only meaning.
-- Keep each translation concise and natural for on-screen subtitles.
-- If CURRENT is a sentence fragment, keep the translation fragmentary too.`;
+- Each CURRENT item is a semantic unit reconstructed from adjacent source timings, not a raw on-screen fragment.
+- Treat the items in order as continuous speech. Understand the complete thought, then translate every CURRENT unit as natural, idiomatic ${nName}, not English word order.
+- Reorder words and clauses freely inside CURRENT. Do not imitate the original timing cuts.
+- PREV_SOURCE and NEXT_SOURCE are context hints only; use them for meaning, pronouns, and terminology without adding their facts to CURRENT.
+- Do not omit concrete details or repeat meaning already carried by another semantic unit.`;
 
     const userMsg = `${contextBlock}\nTranslate this JSON payload:\n${JSON.stringify(payload, null, 2)}`;
 
     let modelResponse;
+    let batchRequestError = null;
     const modelOptions = { ...requestOptions, withMetadata: true, allowTruncated: true };
-    if (settings.aiProvider === 'local') {
-        modelResponse = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1400, modelOptions);
-    } else {
-        modelResponse = await fetchOpenAI(system, userMsg, settings, 1800, modelOptions);
+    try {
+        if (settings.aiProvider === 'local') {
+            modelResponse = await fetchOllama(`${system}\n\n${userMsg}`, settings, 1400, modelOptions);
+        } else {
+            modelResponse = await fetchOpenAI(system, userMsg, settings, 1800, modelOptions);
+        }
+    } catch (error) {
+        // Some OpenAI-compatible services accept a short single-line test but
+        // reject a larger JSON response request (for example due to an output
+        // limit or a provider-specific JSON restriction). Do not mark every
+        // cue unavailable in that case: retry the same cues as short, ordinary
+        // subtitle requests, which is the request shape already verified by
+        // the connection test.
+        batchRequestError = normalizeTranslationError(error);
     }
 
-    const parsed = parseStructuredTranslationJsonDetailed(modelResponse.text, segments);
+    const parsed = modelResponse
+        ? parseStructuredTranslationJsonDetailed(modelResponse.text, segments)
+        : { result: {}, duplicateIds: [], unexpectedIds: [] };
     const firstCheck = validateTranslationMap(segments, parsed.result, targetLang, nativeLang, {
-        truncated: modelResponse.truncated,
+        truncated: Boolean(modelResponse?.truncated),
         duplicateIds: parsed.duplicateIds
     });
     const result = { ...firstCheck.valid };
     const invalidSegments = segments.filter(segment => firstCheck.invalid[String(segment.id)]);
     if (invalidSegments.length > 0) {
         const repairs = await translateMissingSegments(
-            invalidSegments, segments, targetLang, nativeLang, settings, context, requestOptions
+            invalidSegments, segments, targetLang, nativeLang, settings, context, requestOptions, result
         );
         Object.assign(result, repairs);
     }
@@ -1227,7 +1268,18 @@ Rules:
         throw new TranslationError('One or more structured subtitle lines failed translation quality checks.', {
             code: 'STRUCTURED_BLOCK_VALIDATION_FAILED',
             retryable: true,
-            details: { invalid: finalCheck.invalid, unexpectedIds: parsed.unexpectedIds }
+            details: {
+                invalid: finalCheck.invalid,
+                invalidSources: Object.fromEntries(
+                    segments
+                        .filter(segment => finalCheck.invalid[String(segment.id)])
+                        .map(segment => [String(segment.id), String(segment.text || '')])
+                ),
+                unexpectedIds: parsed.unexpectedIds,
+                batchRequestError: batchRequestError
+                    ? { code: batchRequestError.code, message: batchRequestError.message }
+                    : null
+            }
         });
     }
 
@@ -1399,7 +1451,7 @@ function parseNumberedTranslationsDetailed(raw, segments, nativeLang) {
     // Only use positional CJK fallback when the model gave us no usable numbering at all.
     if (Object.keys(result).length === 0 && ['zh', 'ja', 'ko'].includes(nativeLang)) {
         const cjkLines = text.split('\n')
-            .map(l => l.replace(/^\[?\d+\]?\s*[.):]?\s*/, '').trim())
+            .map(l => l.replace(/^(?:\[\d+\]|\d+[.):])\s*/, '').trim())
             .filter(l => {
                 const cjkChars = (l.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
                 return l.length > 1 && cjkChars / l.length > 0.3;
@@ -1430,26 +1482,28 @@ function parseNumberedTranslations(raw, segments, nativeLang) {
     return parseNumberedTranslationsDetailed(raw, segments, nativeLang).result;
 }
 
-async function translateMissingSegments(missingSegments, allSegments, targetLang, nativeLang, settings, context = [], requestOptions = {}) {
+async function translateMissingSegments(missingSegments, allSegments, targetLang, nativeLang, settings, context = [], requestOptions = {}, acceptedTranslations = {}) {
     const tName = LANG_NAMES[targetLang] || targetLang;
     const nName = LANG_NAMES[nativeLang] || nativeLang;
+    const qualityRules = buildSubtitleQualityRules(nName);
     const blockLines = allSegments.map(s => `[${s.id}] ${s.text}`).join('\n');
-    const contextBlock = buildRecentContextBlock(context);
+    const contextBlock = buildVideoTopicBlock(settings) + buildRecentContextBlock(context);
+    const acceptedBlock = Object.entries(acceptedTranslations || {})
+        .map(([id, translation]) => `[${id}] ${translation}`)
+        .join('\n');
     const result = {};
 
     for (const segment of missingSegments) {
         const system = `You are an expert subtitle translator (${tName} to ${nName}).
-Use neighboring subtitle lines only as context.
-Translate ONLY the requested line into natural spoken ${nName}.
-The requested line may be only a fragment.
-Do NOT complete the sentence.
-Do NOT add information from neighboring lines.
-    Do NOT summarize or omit concrete nouns, list items, numbers, or entities from the requested line.
-Output ONLY the translation text for that single line.`;
+${qualityRules}
+Translate ONLY the requested semantic unit. Use neighboring source and accepted translations only to keep meaning, terminology, speaker intent, and tone consistent.
+Write complete, idiomatic ${nName}; freely reorder words and clauses inside the requested unit.
+Output ONLY the translation text for that unit.`;
 
         const userMsg = `${contextBlock}
 Subtitle block:
 ${blockLines}
+${acceptedBlock ? `\nAccepted translations from this same block (terminology and tone reference only):\n${acceptedBlock}\n` : ''}
 
     Requested line: [${segment.id}] ${segment.text}
     ${segment.prevText ? `Previous source line: ${segment.prevText}\n` : ''}${segment.nextText ? `Next source line: ${segment.nextText}` : ''}`;

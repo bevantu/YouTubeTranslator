@@ -74,6 +74,7 @@ function loadBackground() {
         validateTranslationCandidate,
         validateTranslationMap,
         parseStructuredTranslationJsonDetailed,
+        parseNumberedTranslationsDetailed,
         fetchOpenAI,
         fetchOllama,
         handleTranslate,
@@ -359,6 +360,211 @@ test('structured translation repairs only the invalid or truncated line and cach
     assert.equal(calls, 2);
 });
 
+test('structured subtitle translation falls back to short per-line requests when a batch is rejected', async () => {
+    const env = loadBackground();
+    let calls = 0;
+    env.setFetch(async () => {
+        calls++;
+        if (calls === 1) {
+            return fakeResponse({ status: 400, body: 'batch JSON responses are not supported' });
+        }
+        return openAIResponse(calls === 2 ? '第一行。' : '第二行。');
+    });
+    const segments = [
+        { id: 'cue-1', text: 'First line.' },
+        { id: 'cue-2', text: 'Second line.' }
+    ];
+
+    const result = await env.hooks.handleStructuredBlockTranslate(segments, 'en', 'zh', settings(), []);
+    assert.deepEqual({ ...result }, { 'cue-1': '第一行。', 'cue-2': '第二行。' });
+    assert.equal(calls, 3);
+});
+
+test('common acronyms can be translated naturally without being rejected as missing tokens', () => {
+    const env = loadBackground();
+
+    const aiResult = env.hooks.validateTranslationCandidate(
+        { text: 'Because the way AI connects to your tools, data,' },
+        '因为人工智能会连接到你的工具和数据，',
+        'en',
+        'zh'
+    );
+    assert.equal(aiResult.valid, true);
+
+    const apiResult = env.hooks.validateTranslationCandidate(
+        { text: 'API version 42 is ready.' },
+        '接口版本 42 已准备就绪。',
+        'en',
+        'zh'
+    );
+    assert.equal(apiResult.valid, true);
+});
+
+test('acronym-only and localized product subtitles remain usable', () => {
+    const env = loadBackground();
+    const cases = [
+        ['MCP', 'MCP'],
+        ['AI, API, and MCP.', 'AI、API 和 MCP。'],
+        ['Use the YouTube API.', '使用油管接口。'],
+        ['Connect with OpenAI.', '连接到开放人工智能。']
+    ];
+
+    for (const [source, translation] of cases) {
+        const result = env.hooks.validateTranslationCandidate(
+            { text: source }, translation, 'en', 'zh'
+        );
+        assert.equal(result.valid, true, `${source}: ${result.reasons.join(', ')}`);
+    }
+});
+
+test('video subtitle blocks accept DeepSeek-style natural translation of AI', async () => {
+    const env = loadBackground();
+    let calls = 0;
+    env.setFetch(async () => {
+        calls++;
+        return openAIResponse(JSON.stringify({ items: [{
+            id: 'cue-ai',
+            translation: '因为人工智能会连接到你的工具和数据，'
+        }] }));
+    });
+
+    const result = await env.hooks.handleStructuredBlockTranslate([{
+        id: 'cue-ai',
+        text: 'Because the way AI connects to your tools, data,'
+    }], 'en', 'zh', settings(), []);
+
+    assert.deepEqual({ ...result }, {
+        'cue-ai': '因为人工智能会连接到你的工具和数据，'
+    });
+    assert.equal(calls, 1);
+});
+
+test('MCP video terminology completes as one structured subtitle block', async () => {
+    const env = loadBackground();
+    let calls = 0;
+    env.setFetch(async () => {
+        calls++;
+        return openAIResponse(JSON.stringify({ items: [
+            { id: 'cue-mcp', translation: 'MCP' },
+            { id: 'cue-api', translation: '使用油管接口。' },
+            { id: 'cue-list', translation: 'AI、API 和 MCP。' }
+        ] }));
+    });
+
+    const result = await env.hooks.handleStructuredBlockTranslate([
+        { id: 'cue-mcp', text: 'MCP' },
+        { id: 'cue-api', text: 'Use the YouTube API.' },
+        { id: 'cue-list', text: 'AI, API, and MCP.' }
+    ], 'en', 'zh', settings(), []);
+
+    assert.deepEqual({ ...result }, {
+        'cue-mcp': 'MCP',
+        'cue-api': '使用油管接口。',
+        'cue-list': 'AI、API 和 MCP。'
+    });
+    assert.equal(calls, 1);
+});
+
+test('structured subtitle requests carry natural-flow and terminology quality rules', async () => {
+    const env = loadBackground();
+    let requestBody;
+    env.setFetch(async (_url, init) => {
+        requestBody = JSON.parse(init.body);
+        return openAIResponse(JSON.stringify({ items: [
+            { id: 'cue', translation: '不要删除 new-test-joe，然后按 Ctrl+Y。' }
+        ] }));
+    });
+
+    await env.hooks.handleStructuredBlockTranslate([{
+        id: 'cue',
+        text: 'Do not delete new-test-joe, then press Ctrl+Y.'
+    }], 'en', 'zh', settings({ translationVideoTitle: 'MCP vs API: Why traditional APIs are failing AI agents' }), []);
+
+    const system = requestBody.messages[0].content;
+    const user = requestBody.messages[1].content;
+    assert.match(system, /speaker's intent/);
+    assert.match(system, /negation/);
+    assert.match(system, /commands, flags, paths, filenames/);
+    assert.match(system, /continuous speech/);
+    assert.match(system, /not English word order/);
+    assert.match(system, /semantic unit/);
+    assert.doesNotMatch(system, /1:1 ID and timing alignment/);
+    assert.match(user, /Video title\/topic/);
+    assert.match(user, /MCP vs API/);
+});
+
+test('single-line repair receives accepted translations from the same block', async () => {
+    const env = loadBackground();
+    const bodies = [];
+    env.setFetch(async (_url, init) => {
+        bodies.push(JSON.parse(init.body));
+        if (bodies.length === 1) {
+            return openAIResponse(JSON.stringify({ items: [
+                { id: 'cue-1', translation: '智能体已经连接。' }
+            ] }));
+        }
+        return openAIResponse('现在可以使用这些工具了。');
+    });
+
+    const result = await env.hooks.handleStructuredBlockTranslate([
+        { id: 'cue-1', text: 'The agent is connected.' },
+        { id: 'cue-2', text: 'It can use the tools now.' }
+    ], 'en', 'zh', settings(), []);
+
+    assert.equal(result['cue-2'], '现在可以使用这些工具了。');
+    assert.match(bodies[1].messages[1].content, /Accepted translations from this same block/);
+    assert.match(bodies[1].messages[1].content, /智能体已经连接。/);
+});
+
+test('missing product tokens stay advisory while missing numbers are rejected', () => {
+    const env = loadBackground();
+    const result = env.hooks.validateTranslationCandidate(
+        { text: 'Use the YouTube API version 42.' },
+        '请使用油管接口。',
+        'en',
+        'zh'
+    );
+
+    assert.equal(result.valid, false);
+    assert.equal(result.warnings.includes('missing-token:YouTube'), true);
+    assert.equal(result.reasons.includes('missing-number:42'), true);
+});
+
+test('a missing year is repaired before a structured translation can be cached', async () => {
+    const env = loadBackground();
+    let calls = 0;
+    env.setFetch(async () => {
+        calls++;
+        if (calls === 1) {
+            return openAIResponse(JSON.stringify({ items: [{
+                id: 'semantic-1',
+                translation: '年年中，你仍然需要保持清醒。'
+            }] }));
+        }
+        return openAIResponse('到了 2026 年年中，你仍然需要保持清醒。');
+    });
+
+    const segments = [{
+        id: 'semantic-1',
+        text: 'Halfway through 2026, you still need to stay sharp.'
+    }];
+    const result = await env.hooks.handleStructuredBlockTranslate(segments, 'en', 'zh', settings(), []);
+
+    assert.equal(result['semantic-1'], '到了 2026 年年中，你仍然需要保持清醒。');
+    assert.equal(calls, 2);
+});
+
+test('an unnumbered fallback translation does not mistake a leading year for a list label', () => {
+    const env = loadBackground();
+    const parsed = env.hooks.parseNumberedTranslationsDetailed(
+        '2026 年年中，你仍然需要保持清醒。',
+        [{ id: 1, text: 'Halfway through 2026, you still need to stay sharp.' }],
+        'zh'
+    );
+
+    assert.equal(parsed.result[1], '2026 年年中，你仍然需要保持清醒。');
+});
+
 test('legacy numbered block interface remains compatible and returns a complete verified map', async () => {
     const env = loadBackground();
     env.setFetch(async () => openAIResponse('<TRANSLATIONS>\n[1] 第一行。\n[2] 第二行。\n</TRANSLATIONS>'));
@@ -371,12 +577,19 @@ test('legacy numbered block interface remains compatible and returns a complete 
     assert.deepEqual({ ...result }, { 1: '第一行。', 2: '第二行。' });
 });
 
-test('invalid repaired lines fail explicitly and are never cached', async () => {
+test('source text repeated after repair fails explicitly and is never cached', async () => {
     const env = loadBackground();
-    env.setFetch(async () => openAIResponse(JSON.stringify({ items: [
-        { id: 'cue', translation: '接口已经准备好。' }
-    ] })));
-    const segments = [{ id: 'cue', text: 'API version 42 is ready.' }];
+    let calls = 0;
+    env.setFetch(async () => {
+        calls++;
+        if (calls === 1) {
+            return openAIResponse(JSON.stringify({ items: [
+                { id: 'cue', translation: 'This sentence must be translated.' }
+            ] }));
+        }
+        return openAIResponse('This sentence must be translated.');
+    });
+    const segments = [{ id: 'cue', text: 'This sentence must be translated.' }];
 
     await assert.rejects(
         env.hooks.handleStructuredBlockTranslate(segments, 'en', 'zh', settings(), []),

@@ -181,3 +181,59 @@ test('Shorts replay is scoped to the video that made the request', async () => {
   assert.equal(received.length, 2);
   assert.equal(received[1].replay, true);
 });
+
+test('caption-track status distinguishes YouTube captions from captions embedded in the video', () => {
+  const window = new MiniTarget();
+  window.location = {
+    origin: 'https://www.youtube.com',
+    href: 'https://www.youtube.com/watch?v=video-with-tracks'
+  };
+  window.fetch = async () => ({ clone: () => ({ text: async () => '' }) });
+  window.ytInitialPlayerResponse = {
+    videoDetails: { videoId: 'video-with-tracks' },
+    captions: {
+      playerCaptionsTracklistRenderer: {
+        captionTracks: [{ baseUrl: 'https://www.youtube.com/api/timedtext?lang=en' }]
+      }
+    }
+  };
+
+  const context = vm.createContext({
+    window, URL, Map, Date, CustomEvent: MiniCustomEvent,
+    XMLHttpRequest: FakeXMLHttpRequest, Request: class Request {}, console
+  });
+  vm.runInContext(readFileSync(join(root, 'content/inject.js'), 'utf8'), context);
+
+  const received = [];
+  window.addEventListener('__yb_caption_tracks__', event => received.push(event.detail));
+  window.dispatchEvent(new MiniCustomEvent('__yb_caption_tracks_request__', {
+    detail: { videoId: 'video-with-tracks' }
+  }));
+  assert.equal(received[0].videoId, 'video-with-tracks');
+  assert.equal(received[0].available, true);
+
+  window.ytInitialPlayerResponse = {
+    videoDetails: { videoId: 'video-with-burned-in-captions' }
+  };
+  window.dispatchEvent(new MiniCustomEvent('__yb_caption_tracks_request__', {
+    detail: { videoId: 'video-with-burned-in-captions' }
+  }));
+  assert.equal(received[1].videoId, 'video-with-burned-in-captions');
+  assert.equal(received[1].available, false);
+});
+
+test('CC prompt is reserved for videos with a verified YouTube caption track', () => {
+  const content = readFileSync(join(root, 'content/content.js'), 'utf8');
+
+  assert.match(content, /runtimeStatus\.captionTracksAvailable === true/);
+  assert.match(content, /captionTracksAvailable === true\s*\|\|\s*Boolean\(SubtitleManager\.captions\?\.length\)/);
+  assert.doesNotMatch(content, /\['error', 'degraded', 'no-captions'\]\.includes\(runtimeStatus\.state\)/);
+});
+
+test('downloaded translation logs preserve optimizer timestamps and model metadata', () => {
+  const subtitle = readFileSync(join(root, 'content/subtitle.js'), 'utf8');
+
+  assert.match(subtitle, /Number\(val\.time \?\? val\.timeMs \?\? 0\)/);
+  assert.match(subtitle, /Translation: \$\{this\.settings\.targetLanguage\} → \$\{this\.settings\.nativeLanguage\}/);
+  assert.match(subtitle, /\$\{provider\} \| \$\{model \|\| 'unknown model'\}/);
+});

@@ -27,6 +27,7 @@
     let observedCcButton = null;
     let observedCcClickHandler = null;
     let subtitleDomObserver = null;
+    let captionTracksAvailable = null;
 
     const runtimeStatus = {
         state: 'unsupported',
@@ -35,6 +36,7 @@
         action: '',
         captionCount: 0,
         ccEnabled: null,
+        captionTracksAvailable: null,
         updatedAt: Date.now()
     };
 
@@ -96,6 +98,9 @@
         if (typeof extra.ccEnabled === 'boolean' || extra.ccEnabled === null) {
             runtimeStatus.ccEnabled = extra.ccEnabled;
         }
+        if (typeof extra.captionTracksAvailable === 'boolean' || extra.captionTracksAvailable === null) {
+            runtimeStatus.captionTracksAvailable = extra.captionTracksAvailable;
+        }
         SubtitlePanel.setStatus?.(runtimeStatus);
         renderPlayerStatus();
         document.dispatchEvent(new CustomEvent('yb-runtime-status', { detail: { ...runtimeStatus } }));
@@ -106,8 +111,10 @@
         if (!player) return;
 
         let chip = player.querySelector('.yb-player-status');
-        const shouldShow = ['error', 'degraded', 'no-captions'].includes(runtimeStatus.state)
-            || (runtimeStatus.state === 'waiting' && runtimeStatus.ccEnabled === false);
+        const shouldShow = ['error', 'degraded'].includes(runtimeStatus.state)
+            || (runtimeStatus.action === 'enable-cc'
+                && runtimeStatus.ccEnabled === false
+                && runtimeStatus.captionTracksAvailable === true);
 
         if (!shouldShow) {
             chip?.remove();
@@ -141,6 +148,12 @@
 
     function requestTimedTextReplay() {
         window.dispatchEvent(new CustomEvent('__yb_timedtext_request__', {
+            detail: { videoId: currentVideoId }
+        }));
+    }
+
+    function requestCaptionTrackStatus() {
+        window.dispatchEvent(new CustomEvent('__yb_caption_tracks_request__', {
             detail: { videoId: currentVideoId }
         }));
     }
@@ -298,20 +311,36 @@
         return null;
     }
 
+    function canEnableCaptions(button = observedCcButton) {
+        return Boolean(
+            button
+            && !button.disabled
+            && button.getAttribute('aria-disabled') !== 'true'
+            && !button.classList.contains('ytp-button-disabled')
+        );
+    }
+
+    function canPromptToEnableCaptions(button = observedCcButton) {
+        return (captionTracksAvailable === true || Boolean(SubtitleManager.captions?.length))
+            && canEnableCaptions(button);
+    }
+
     function syncCcState() {
         const enabled = getCcEnabled();
         runtimeStatus.ccEnabled = enabled;
         const player = document.querySelector('#movie_player');
-        player?.classList.toggle('yb-cc-disabled', enabled === false);
+        const shouldPromptToEnable = enabled === false && canPromptToEnableCaptions();
+        player?.classList.toggle('yb-cc-disabled', shouldPromptToEnable);
 
-        if (enabled === false && currentSettings?.enabled) {
+        if (shouldPromptToEnable && currentSettings?.enabled) {
             SubtitleManager.setTranslationPaused?.(true);
             cancelSubtitleTranslations();
             SubtitleManager.hideNativeCaptions?.(false);
             setStatus('waiting', 'YouTube captions are turned off.', {
                 ccEnabled: false,
                 action: 'enable-cc',
-                captionCount: SubtitleManager.captions?.length || 0
+                captionCount: SubtitleManager.captions?.length || 0,
+                captionTracksAvailable
             });
         } else if (enabled === true) {
             SubtitleManager.setTranslationPaused?.(false);
@@ -322,9 +351,23 @@
                     captionCount: SubtitleManager.captions.length
                 });
             } else {
-                setStatus('waiting', "Waiting for this video's captions...", { ccEnabled: true });
+                setStatus('waiting', "Waiting for this video's captions...", {
+                    ccEnabled: true,
+                    captionTracksAvailable
+                });
                 requestTimedTextReplay();
             }
+        } else if (captionTracksAvailable === false && !SubtitleManager.captions?.length) {
+            setStatus('no-captions', 'No usable captions were found for this video.', {
+                ccEnabled: null,
+                captionCount: 0,
+                captionTracksAvailable: false
+            });
+        } else if (enabled === false) {
+            setStatus('waiting', "Checking this video's captions...", {
+                ccEnabled: null,
+                captionTracksAvailable
+            });
         }
     }
 
@@ -358,7 +401,7 @@
 
     function ensureCaptionsEnabled() {
         const button = observedCcButton || document.querySelector('.ytp-subtitles-button');
-        if (!button) return false;
+        if (!button || !canPromptToEnableCaptions(button)) return false;
         if (getCcEnabled(button) === false) button.click();
         setStatus('preparing', 'Turning on captions...', { ccEnabled: true });
         setTimeout(requestTimedTextReplay, 250);
@@ -370,12 +413,13 @@
         noCaptionTimer = setTimeout(() => {
             if (generation !== routeGeneration || SubtitleManager.captions?.length) return;
             const ccEnabled = getCcEnabled();
-            if (ccEnabled === false) {
+            if (ccEnabled === false && canPromptToEnableCaptions()) {
                 syncCcState();
             } else {
                 setStatus('no-captions', 'No usable captions were found for this video.', {
                     ccEnabled,
-                    captionCount: 0
+                    captionCount: 0,
+                    captionTracksAvailable
                 });
             }
         }, 12000);
@@ -396,8 +440,12 @@
             return;
         }
 
-        setStatus('waiting', 'Waiting for YouTube captions...', { captionCount: 0 });
+        setStatus('waiting', 'Waiting for YouTube captions...', {
+            captionCount: 0,
+            captionTracksAvailable: null
+        });
         requestTimedTextReplay();
+        requestCaptionTrackStatus();
 
         const [video, player] = await Promise.all([
             waitForElement('video', 10000, generation),
@@ -424,6 +472,7 @@
         observeCcButton();
         startNoCaptionTimer(generation);
         requestTimedTextReplay();
+        requestCaptionTrackStatus();
         processPendingTimedText();
     }
 
@@ -450,6 +499,7 @@
         initialized = false;
         processingTimedText = false;
         subtitleGeneration = null;
+        captionTracksAvailable = null;
         pendingTimedText.clear();
         SubtitlePanel.clear?.(reason === 'disabled' ? 'Disabled' : 'Waiting for captions...');
         SubtitlePanel.suspend?.();
@@ -472,7 +522,10 @@
         }
 
         const generation = routeGeneration;
-        setStatus('waiting', 'Opening video...', { captionCount: 0 });
+        setStatus('waiting', 'Opening video...', {
+            captionCount: 0,
+            captionTracksAvailable: null
+        });
         requestTimedTextReplay();
         initTimer = setTimeout(() => {
             initTimer = null;
@@ -494,6 +547,13 @@
     }
 
     window.addEventListener('__yb_timedtext__', event => enqueueTimedText(event.detail || {}));
+    window.addEventListener('__yb_caption_tracks__', event => {
+        const detail = event.detail || {};
+        if (detail.videoId && currentVideoId && detail.videoId !== currentVideoId) return;
+        if (typeof detail.available !== 'boolean') return;
+        captionTracksAvailable = detail.available;
+        syncCcState();
+    });
     document.addEventListener('yt-navigate-start', () => scheduleRouteCheck(0));
     document.addEventListener('yt-navigate-finish', () => scheduleRouteCheck(50));
     window.addEventListener('popstate', () => scheduleRouteCheck(0));

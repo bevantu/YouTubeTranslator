@@ -193,7 +193,13 @@ Object.assign(SubtitlePanel, {
         document.addEventListener('yb-caption-translation', event => {
             const detail = event.detail || {};
             if (!this.acceptGeneration(detail.generation)) return;
-            this.updateSubtitleTranslation(Number(detail.index), detail.translation || '', detail.status, detail.error);
+            this.updateSubtitleTranslation(
+                Number(detail.index),
+                detail.translation || '',
+                detail.status,
+                detail.error,
+                detail.translationMode || ''
+            );
         });
         document.addEventListener('yb-vocabulary-updated', () => {
             if (this.panel?.querySelector('.yb-vocabulary-tab.active')) this.loadVocabulary();
@@ -213,6 +219,7 @@ Object.assign(SubtitlePanel, {
             endMs: Number(caption.endMs ?? caption.endTime * 1000) || 0,
             text: String(caption.text || caption.original || ''),
             translation: caption.translation && caption.translation !== '__pending__' ? String(caption.translation) : '',
+            translationMode: caption.translationMode || '',
             status: caption.status || (caption.translation === '__pending__' ? 'pending' : ''),
             error: caption.error || ''
         };
@@ -296,6 +303,7 @@ Object.assign(SubtitlePanel, {
         translated.className = 'yb-panel-sub-translated';
         translated.dir = 'auto';
         translated.dataset.status = caption.status || '';
+        translated.dataset.mode = caption.translationMode || '';
         translated.textContent = caption.status === 'pending'
             ? 'Translating...'
             : (caption.status === 'error' ? 'Translation unavailable' : caption.translation);
@@ -304,11 +312,12 @@ Object.assign(SubtitlePanel, {
         return entry;
     },
 
-    updateSubtitleTranslation(index, translated, status = '', error = '') {
+    updateSubtitleTranslation(index, translated, status = '', error = '', translationMode = '') {
         const position = this.indexToPosition.get(index);
         if (position == null) return;
         const caption = this.captions[position];
         caption.translation = translated || '';
+        caption.translationMode = translationMode || '';
         caption.status = status || (translated ? 'ready' : '');
         caption.error = error || '';
         this.renderVirtualWindow(true);

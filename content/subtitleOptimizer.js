@@ -85,7 +85,13 @@
         if (M.startsWithContinuationWord) {
             try { return !!M.startsWithContinuationWord(s); } catch { /* ignore */ }
         }
-        return /^(and|or|but|so|because|as|while|although|though|then|that|which|who|when|where|with|without|for|to|of|in|on|at|by|from|以及|但是|因为|所以|而且|然后|如果|虽然)/i.test(s);
+        return /^(and|or|but|so|because|as|while|although|though|then|than|that|which|who|when|where|with|without|for|to|of|in|on|at|by|from|through|into|onto|within|over|under|between|around|以及|但是|因为|所以|而且|然后|如果|虽然)/i.test(s);
+    }
+
+    function endsDangling(text) {
+        const s = cleanText(text).toLowerCase();
+        if (!s || endsSentence(s)) return false;
+        return /\b(?:a|an|the|to|of|for|with|without|from|in|on|at|by|about|as|than|that|which|who|whose|why|how|if|because|but|and|or|not|do|does|did|don't|doesn't|didn't|isn't|aren't|wasn't|weren't|can|could|will|would|should|may|might|must|through|into|onto|within|over|under|between|around|i|me|my|mine|you|your|yours|we|our|ours|he|his|she|her|hers|it|its|they|their|theirs|this|these|those)\s*[,;:–—-]*$/i.test(s);
     }
 
     function canBreak(text) {
@@ -519,6 +525,336 @@
         return displayCues;
     }
 
+    function normalizeSemanticToken(token) {
+        return cleanText(token)
+            .toLocaleLowerCase()
+            .replace(/^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu, '');
+    }
+
+    function semanticTokenOverlap(existingTokens, incomingTokens, allowSingle = false) {
+        const max = Math.min(existingTokens.length, incomingTokens.length, 40);
+        for (let length = max; length > 0; length--) {
+            if (length === 1 && !allowSingle) continue;
+            let matches = true;
+            for (let offset = 0; offset < length; offset++) {
+                const left = normalizeSemanticToken(existingTokens[existingTokens.length - length + offset]);
+                const right = normalizeSemanticToken(incomingTokens[offset]);
+                if (!left || !right || left !== right) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) return length;
+        }
+        return 0;
+    }
+
+    function isStrongSemanticBoundary(token) {
+        const value = cleanText(token);
+        if (!/[.!?。！？…]["'”’）\])}]*$/.test(value)) return false;
+        const withoutClosers = value.replace(/["'”’）\])}]+$/g, '');
+        if (/^(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|e\.g|i\.e|U\.S|U\.K|No)\.$/i.test(withoutClosers)) {
+            return false;
+        }
+        if (/^[A-Z]\.$/.test(withoutClosers)) return false;
+        return true;
+    }
+
+    function isSoftSemanticBoundary(token) {
+        return /[,;:，；：、]["'”’）\])}]*$/.test(cleanText(token));
+    }
+
+    function splitSemanticTokenRange(tokens, start, end, lang = '') {
+        const ranges = [];
+        const maxChars = 220;
+        let cursor = start;
+
+        while (cursor < end) {
+            let limit = cursor + 1;
+            let lastSoft = -1;
+            while (limit <= end) {
+                const candidate = joinTokens(tokens.slice(cursor, limit), lang);
+                if (candidate.length > maxChars && limit > cursor + 1) break;
+                if (isSoftSemanticBoundary(tokens[limit - 1])) lastSoft = limit;
+                limit++;
+            }
+
+            if (limit > end) {
+                ranges.push([cursor, end]);
+                break;
+            }
+
+            const hardCut = Math.max(cursor + 1, limit - 1);
+            const softCut = lastSoft > cursor &&
+                joinTokens(tokens.slice(cursor, lastSoft), lang).length >= 80
+                ? lastSoft
+                : -1;
+            const cut = softCut > cursor ? softCut : hardCut;
+            ranges.push([cursor, cut]);
+            cursor = cut;
+        }
+        return ranges;
+    }
+
+    /**
+     * Reconstruct complete semantic units from source-timed YouTube cues.
+     * A cue may overlap two semantic units (for example "smart. You"). The
+     * resulting translations can therefore be shown across adjacent source
+     * cues without forcing Chinese to break at the original English timings.
+     */
+    function buildSemanticTranslationPlan(cues, lang = '') {
+        const tokens = [];
+        const cueRanges = new Map();
+        const cueContributionRanges = new Map();
+        let previousCue = null;
+
+        for (const cue of cues || []) {
+            const cueTokens = splitWords(cue?.text || '', lang);
+            if (!cueTokens.length) continue;
+            const rolling = Boolean(cue?.isRollingSnapshot || previousCue?.isRollingSnapshot);
+            const overlap = semanticTokenOverlap(tokens, cueTokens, rolling);
+            const contributionStart = tokens.length;
+            const start = Math.max(0, tokens.length - overlap);
+            tokens.push(...cueTokens.slice(overlap));
+            cueRanges.set(String(cue.id), { start, end: tokens.length });
+            cueContributionRanges.set(String(cue.id), { start: contributionStart, end: tokens.length });
+            previousCue = cue;
+        }
+
+        const sentenceRanges = [];
+        let sentenceStart = 0;
+        for (let index = 0; index < tokens.length; index++) {
+            if (!isStrongSemanticBoundary(tokens[index])) continue;
+            sentenceRanges.push([sentenceStart, index + 1]);
+            sentenceStart = index + 1;
+        }
+        if (sentenceStart < tokens.length) sentenceRanges.push([sentenceStart, tokens.length]);
+
+        const boundedRanges = sentenceRanges.flatMap(([start, end]) =>
+            splitSemanticTokenRange(tokens, start, end, lang)
+        );
+        const segments = boundedRanges.map(([tokenStart, tokenEnd], index) => ({
+            id: `semantic_${index + 1}`,
+            text: joinTokens(tokens.slice(tokenStart, tokenEnd), lang),
+            tokenStart,
+            tokenEnd,
+            sourceCueIds: [],
+            cueTokenWeights: {},
+            startMs: Infinity,
+            endMs: 0
+        })).filter(segment => segment.text);
+        const cueToSegmentIds = {};
+
+        for (const cue of cues || []) {
+            const cueId = String(cue.id);
+            const range = cueRanges.get(cueId);
+            const contributionRange = cueContributionRanges.get(cueId) || range;
+            if (!range) {
+                cueToSegmentIds[cueId] = [];
+                continue;
+            }
+            const matches = segments.filter(segment =>
+                range.start < segment.tokenEnd && range.end > segment.tokenStart
+            );
+            cueToSegmentIds[cueId] = matches.map(segment => segment.id);
+            for (const segment of matches) {
+                segment.sourceCueIds.push(cueId);
+                segment.cueTokenWeights[cueId] = Math.max(0, Math.min(contributionRange.end, segment.tokenEnd) -
+                    Math.max(contributionRange.start, segment.tokenStart));
+                segment.startMs = Math.min(segment.startMs, Number(cue.startMs) || 0);
+                segment.endMs = Math.max(segment.endMs, Number(cue.endMs) || Number(cue.startMs) || 0);
+            }
+        }
+
+        for (const segment of segments) {
+            if (!Number.isFinite(segment.startMs)) segment.startMs = Number(cues?.[0]?.startMs) || 0;
+            if (!segment.endMs) segment.endMs = Number(cues?.[cues.length - 1]?.endMs) || segment.startMs;
+        }
+
+        return {
+            text: joinTokens(tokens, lang),
+            tokens,
+            segments,
+            cueToSegmentIds,
+            cueRanges: Object.fromEntries(cueRanges),
+            cueContributionRanges: Object.fromEntries(cueContributionRanges)
+        };
+    }
+
+    function isUnsafeTranslationCut(text, position) {
+        const left = text.slice(0, position).trimEnd();
+        const right = text.slice(position).trimStart();
+        if (!left || !right) return true;
+        const a = left.at(-1) || '';
+        const b = right[0] || '';
+        if (/^[，。！？；：、,.!?;:%％）\])}]/.test(right)) return true;
+        if (/[A-Za-z0-9._/+:-]/.test(a) && /[A-Za-z0-9._/+:-]/.test(b)) return true;
+        if (/\d/.test(a) && /[年月日时分秒%％万亿千百kKmMgGbB]/.test(b)) return true;
+        if (/[$¥￥€£]/.test(a) || /[$¥￥€£]/.test(b)) return true;
+        return false;
+    }
+
+    function translationCutCandidates(text, lang = '') {
+        const candidates = new Map();
+        const add = (position, penalty) => {
+            if (position <= 0 || position >= text.length || isUnsafeTranslationCut(text, position)) return;
+            const previous = candidates.get(position);
+            if (previous == null || penalty < previous) candidates.set(position, penalty);
+        };
+
+        for (const match of text.matchAll(/[。！？!?；;]/gu)) add(match.index + match[0].length, 0);
+        for (const match of text.matchAll(/[，,：:、]/gu)) add(match.index + match[0].length, 1);
+
+        if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+            try {
+                const segmenter = new Intl.Segmenter(lang || undefined, { granularity: 'word' });
+                for (const part of segmenter.segment(text)) {
+                    const end = part.index + part.segment.length;
+                    if (part.segment.trim()) add(end, part.isWordLike ? 3 : 2);
+                }
+            } catch { /* fall through to whitespace and grapheme boundaries */ }
+        }
+
+        for (const match of text.matchAll(/\s+/gu)) add(match.index, 4);
+        let cursor = 0;
+        for (const character of Array.from(text)) {
+            cursor += character.length;
+            add(cursor, 12);
+        }
+
+        return Array.from(candidates, ([position, penalty]) => ({ position, penalty }))
+            .sort((a, b) => a.position - b.position);
+    }
+
+    function splitNaturalTranslation(text, weights, lang = '') {
+        const value = cleanText(text);
+        const count = Math.max(1, Array.isArray(weights) ? weights.length : 1);
+        if (!value || count === 1) return [value];
+
+        const candidates = translationCutCandidates(value, lang);
+        if (!candidates.length) return [value].concat(Array(count - 1).fill(''));
+        const safeWeights = weights.map(weight => Math.max(0.25, Number(weight) || 0));
+        const totalWeight = safeWeights.reduce((sum, weight) => sum + weight, 0);
+        const cuts = [];
+        let start = 0;
+        let cumulativeWeight = 0;
+
+        for (let partIndex = 0; partIndex < count - 1; partIndex++) {
+            cumulativeWeight += safeWeights[partIndex];
+            const desired = value.length * cumulativeWeight / totalWeight;
+            const remainingCuts = count - partIndex - 2;
+            const feasible = candidates.filter(candidate => {
+                if (candidate.position <= start) return false;
+                const later = candidates.filter(other => other.position > candidate.position).length;
+                return later >= remainingCuts;
+            });
+            if (!feasible.length) break;
+            feasible.sort((a, b) => {
+                const aScore = Math.abs(a.position - desired) + a.penalty * 2.5;
+                const bScore = Math.abs(b.position - desired) + b.penalty * 2.5;
+                return aScore - bScore || a.position - b.position;
+            });
+            const cut = feasible[0].position;
+            cuts.push(cut);
+            start = cut;
+        }
+
+        const pieces = [];
+        let cursor = 0;
+        for (const cut of cuts) {
+            pieces.push(cleanText(value.slice(cursor, cut)));
+            cursor = cut;
+        }
+        pieces.push(cleanText(value.slice(cursor)));
+        while (pieces.length < count) pieces.push('');
+        return pieces.slice(0, count);
+    }
+
+    function selectDisplayCueIds(cues, semanticPlan, segment, translation, lang = '') {
+        const cueOrder = new Map((cues || []).map((cue, index) => [String(cue.id), index]));
+        const candidateIds = Array.from(new Set(segment.sourceCueIds || []))
+            .filter(id => cueOrder.has(String(id)))
+            .map(String)
+            .sort((a, b) => cueOrder.get(a) - cueOrder.get(b));
+        if (!candidateIds.length) return [];
+
+        const compactLength = isNoSpaceLanguage(lang)
+            ? cleanText(translation).replace(/\s/g, '').length
+            : cleanText(translation).length;
+        const normalizedLanguage = normalizeLanguageCode(lang);
+        const maxComfortableChars = normalizedLanguage === 'zh'
+            ? 20
+            : (normalizedLanguage === 'ja'
+                ? 22
+                : (normalizedLanguage === 'ko' ? 34 : (isNoSpaceLanguage(lang) ? 28 : 58)));
+        const desiredCount = Math.min(candidateIds.length, Math.max(1, Math.ceil(compactLength / maxComfortableChars)));
+        const weights = candidateIds.map(id => Math.max(0.25, Number(segment.cueTokenWeights?.[id]) || 0));
+
+        if (desiredCount === 1) {
+            const midpoint = (segment.tokenStart + segment.tokenEnd) / 2;
+            return [candidateIds.slice().sort((a, b) => {
+                const weightDiff = (Number(segment.cueTokenWeights?.[b]) || 0) -
+                    (Number(segment.cueTokenWeights?.[a]) || 0);
+                if (weightDiff) return weightDiff;
+                const aRange = semanticPlan.cueContributionRanges?.[a];
+                const bRange = semanticPlan.cueContributionRanges?.[b];
+                const aContains = aRange && aRange.start <= midpoint && midpoint < aRange.end ? 1 : 0;
+                const bContains = bRange && bRange.start <= midpoint && midpoint < bRange.end ? 1 : 0;
+                if (aContains !== bContains) return bContains - aContains;
+                return cueOrder.get(b) - cueOrder.get(a);
+            })[0]];
+        }
+
+        const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+        const centers = [];
+        let cumulative = 0;
+        candidateIds.forEach((id, index) => {
+            centers.push({ id, center: cumulative + weights[index] / 2, weight: weights[index] });
+            cumulative += weights[index];
+        });
+        const selected = new Set();
+        for (let partIndex = 0; partIndex < desiredCount; partIndex++) {
+            const target = totalWeight * (partIndex + 0.5) / desiredCount;
+            const best = centers
+                .filter(candidate => !selected.has(candidate.id))
+                .sort((a, b) =>
+                    Math.abs(a.center - target) - Math.abs(b.center - target) ||
+                    b.weight - a.weight || cueOrder.get(a.id) - cueOrder.get(b.id)
+                )[0];
+            if (best) selected.add(best.id);
+        }
+        return Array.from(selected).sort((a, b) => cueOrder.get(a) - cueOrder.get(b));
+    }
+
+    function distributeSemanticTranslations(cues, semanticPlan, semanticTranslations, lang = '') {
+        const cueOrder = new Map((cues || []).map((cue, index) => [String(cue.id), index]));
+        const piecesByCueId = Object.fromEntries((cues || []).map(cue => [String(cue.id), []]));
+        const displayCueIdsBySegment = {};
+
+        for (const [segmentIndex, segment] of (semanticPlan?.segments || []).entries()) {
+            const translation = cleanText(semanticTranslations?.[segment.id] || '');
+            if (!translation) continue;
+            const displayCueIds = selectDisplayCueIds(cues, semanticPlan, segment, translation, lang);
+            displayCueIdsBySegment[segment.id] = displayCueIds;
+            const weights = displayCueIds.map(id => Math.max(0.25, Number(segment.cueTokenWeights?.[id]) || 0));
+            const chunks = splitNaturalTranslation(translation, weights, lang);
+            displayCueIds.forEach((cueId, index) => {
+                const chunk = chunks[index] || '';
+                if (chunk) piecesByCueId[cueId].push({ segmentIndex, text: chunk });
+            });
+        }
+
+        const byCueId = {};
+        for (const cue of cues || []) {
+            const cueId = String(cue.id);
+            const ordered = (piecesByCueId[cueId] || []).sort((a, b) => a.segmentIndex - b.segmentIndex);
+            byCueId[cueId] = ordered.map(piece => piece.text)
+                .join(isNoSpaceLanguage(lang) ? '' : ' ')
+                .trim();
+        }
+        return { byCueId, displayCueIdsBySegment };
+    }
+
     function buildTranslationBlocks(cues, generation = 0) {
         const blocks = [];
         let current = [];
@@ -528,7 +864,8 @@
             const blockIndex = blocks.length;
             const blockId = `block_${generation}_${blockIndex}_${Math.round(current[0].startMs)}_${Math.round(current[current.length - 1].endMs)}`;
             const lang = current[0]?.sourceLanguage || '';
-            const context = dedupeJoinedText(current.map(c => c.text), lang);
+            const semanticPlan = buildSemanticTranslationPlan(current, lang);
+            const context = semanticPlan.text || dedupeJoinedText(current.map(c => c.text), lang);
             current.forEach((cue, idx) => {
                 cue.translateContext = context;
                 cue.translateBlockId = blockId;
@@ -542,6 +879,7 @@
                 cues: current.slice(),
                 text: context,
                 original: context,
+                semanticPlan,
                 translated: ''
             });
             current = [];
@@ -552,12 +890,16 @@
                 const prev = current[current.length - 1];
                 const nextBlockText = dedupeJoinedText(current.map(c => c.text).concat(cue.text), cue.sourceLanguage || '');
                 const gap = cue.startMs - prev.endMs;
-                const shouldSplit =
-                    gap > DISPLAY_RULES.gapBreakMs ||
-                    endsSentence(prev.text) ||
-                    current.length >= 4 ||
-                    nextBlockText.length > 320;
-                if (shouldSplit && !startsContinuation(cue.text)) flush();
+                const startsLowercase = /^[a-z]/.test(cleanText(cue.text));
+                const naturalContinuation = startsContinuation(cue.text) || startsLowercase || endsDangling(prev.text);
+                const softLimit = current.length >= 6 || nextBlockText.length > 480;
+                const absoluteLimit = current.length >= 12 || nextBlockText.length > 900;
+                const strongGap = gap > 1800;
+                const safeSentenceBoundary = endsSentence(prev.text) && !startsContinuation(cue.text);
+                const canBridgeBoundary = naturalContinuation && gap <= 2200 && !absoluteLimit;
+                const shouldUseSafeBoundary = safeSentenceBoundary;
+                const safeSoftLimit = softLimit && safeSentenceBoundary;
+                if (absoluteLimit || ((strongGap || safeSoftLimit || shouldUseSafeBoundary) && !canBridgeBoundary)) flush();
             }
             current.push(cue);
         }
@@ -569,7 +911,7 @@
         return cleanText(text)
             .replace(/^<FINAL>/i, '')
             .replace(/<\/FINAL>$/i, '')
-            .replace(/^\s*(?:\[\d+\]|\d+[.)、：:]?)\s*/, '')
+            .replace(/^\s*(?:\[\d+\]|\d+[.)、：:])\s*/, '')
             .trim();
     }
 
@@ -583,8 +925,31 @@
         } catch { /* page lifecycle may already be ending */ }
     }
 
+    function cueTranslationResolved(cue) {
+        if (!cue || cue.translation === '__pending__') return false;
+        if (cue.translationMode === 'hold') return true;
+        return Boolean(cue.translation);
+    }
+
+    function effectiveTranslationForCue(manager, index) {
+        const cue = manager?.captions?.[index];
+        if (!cue) return '';
+        if (cue.translation && cue.translation !== '__pending__') return cue.translation;
+        if (cue.translationMode !== 'hold') return '';
+
+        for (let cursor = index - 1; cursor >= 0; cursor--) {
+            const previous = manager.captions[cursor];
+            const next = manager.captions[cursor + 1];
+            if (!previous || previous.translateBlockId !== cue.translateBlockId) break;
+            if ((next.startMs - previous.endMs) > 1800) break;
+            if (previous.translation && previous.translation !== '__pending__') return previous.translation;
+        }
+        return '';
+    }
+
     function captionStatus(cue) {
         if (cue?.translation === '__pending__') return 'pending';
+        if (cue?.translationMode === 'hold') return 'ready';
         if (cue?.translation) return 'ready';
         if (cue?.translationError) return 'error';
         return 'untranslated';
@@ -601,6 +966,7 @@
                 endMs: cue.endMs,
                 text: cue.text,
                 translation: cue.translation && cue.translation !== '__pending__' ? cue.translation : '',
+                translationMode: cue.translationMode || '',
                 status: captionStatus(cue)
             }))
         });
@@ -676,7 +1042,18 @@
     }
 
     function blockFullyTranslated(block) {
-        return !!block && block.cues.every(c => c.translation && c.translation !== '__pending__');
+        return !!block && block.cues.every(cueTranslationResolved);
+    }
+
+    function orderedContextBeforeBlock(manager, blockIndex, limit = 5) {
+        return (manager.translationBlocks || [])
+            .filter(block => (block.index ?? -1) < blockIndex && blockFullyTranslated(block) && block.translated)
+            .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+            .slice(-limit)
+            .map(block => ({
+                original: String(block.original || block.text || '').slice(0, 240),
+                translated: String(block.translated || '').slice(0, 240)
+            }));
     }
 
     function findBlockById(manager, blockId) {
@@ -694,9 +1071,13 @@
         return priorityCue?.translateBlockId === (block.id || block.blockId);
     }
 
+    function isDiscardedTranslationError(error) {
+        return Boolean(error?.stale) || ['STALE_TRANSLATION_TASK', 'REQUEST_CANCELLED'].includes(error?.code);
+    }
+
     function recordBlockFailure(manager, block, error) {
         if (!block) return;
-        if (error?.stale || ['STALE_TRANSLATION_TASK', 'REQUEST_CANCELLED'].includes(error?.code)) return;
+        if (isDiscardedTranslationError(error)) return;
         if (block.lastFailureError === error) return;
         block.lastFailureError = error;
         const retryable = error?.retryable !== false;
@@ -707,7 +1088,11 @@
         const delay = Math.min(30000, 1500 * (2 ** Math.min(4, block.failureCount - 1)));
         block.retryAt = exhausted ? Infinity : Date.now() + delay;
         for (const cue of block.cues || []) {
-            if (cue.translation === '__pending__') cue.translation = null;
+            if (cue.translation !== '__pending__' && cueTranslationResolved(cue)) continue;
+            if (cue.translation === '__pending__') {
+                cue.translation = null;
+                cue.translationMode = '';
+            }
             cue.translationError = error?.message || 'Translation unavailable';
             const index = manager.captions?.indexOf(cue) ?? -1;
             emitManagerEvent('yb-caption-translation', {
@@ -715,6 +1100,7 @@
                 index,
                 id: cue.id,
                 translation: '',
+                translationMode: '',
                 status: 'error',
                 error: cue.translationError
             });
@@ -880,6 +1266,9 @@
         this.lastRenderedId = '';
         this.lastRenderedSignature = '';
         this.lastActiveEventIndex = -2;
+        for (const cue of entries) {
+            cue.translationMode = cue.translation && cue.translation !== '__pending__' ? 'text' : '';
+        }
         this.captions = entries;
         this.contextBuffer = [];
         this.translationBlocks = buildTranslationBlocks(entries, this._ybGeneration);
@@ -936,6 +1325,7 @@
                 cue.translation = this.settings?.autoTranslate && !this.settings?.useAITranslation
                     ? cue.nativeTranslation || null
                     : null;
+                cue.translationMode = cue.translation ? 'text' : '';
                 cue.translationError = '';
             }
             this.translationBlocks = buildTranslationBlocks(this.captions || [], this._ybGeneration);
@@ -977,7 +1367,10 @@
         this._ybTranslationPaused = next;
         invalidateGeneration(this);
         for (const cue of this.captions || []) {
-            if (cue.translation === '__pending__') cue.translation = null;
+            if (cue.translation === '__pending__') {
+                cue.translation = null;
+                cue.translationMode = '';
+            }
         }
         this.translationBlocks = buildTranslationBlocks(this.captions || [], this._ybGeneration);
         this.lastRenderedSignature = '';
@@ -1095,16 +1488,16 @@
             !this._ybTranslationPaused &&
             this.settings?.autoTranslate &&
             this.settings?.useAITranslation &&
-            entry.translation == null
+            !cueTranslationResolved(entry)
         );
         const waitingToRetry = needsTranslation && !retryAllowed;
         const translation = entry.translation === '__pending__'
             ? null
-            : (entry.translation || (waitingToRetry
+            : (effectiveTranslationForCue(this, index) || (waitingToRetry
                 ? ((block?.failureCount || 0) >= MAX_BLOCK_FAILURES ? 'Translation unavailable' : 'Translation retrying…')
                 : null));
         const loading = (needsTranslation && retryAllowed) || entry.translation === '__pending__';
-        const signature = `${entry.id || entry.startMs}:${entry.text}:${translation || ''}:${loading}`;
+        const signature = `${entry.id || entry.startMs}:${entry.text}:${entry.translationMode || ''}:${translation || ''}:${loading}`;
 
         if (signature !== this.lastRenderedSignature) {
             this.lastRenderedSignature = signature;
@@ -1124,7 +1517,15 @@
                     this.onTimeUpdate(document.querySelector('video')?.currentTime || currentTimeSec);
                 }
             }).catch(err => {
-                console.warn('[YT Bilingual Optimizer] Current block translation failed:', err);
+                // A route, track, or settings change intentionally cancels the old request.
+                // It is not a translation failure and should not surface as a console warning.
+                if (isDiscardedTranslationError(err)) return;
+                console.warn('[YT Bilingual Optimizer] Current block translation failed:', JSON.stringify({
+                    message: err?.message || String(err),
+                    code: err?.code || '',
+                    retryable: Boolean(err?.retryable),
+                    details: err?.details || null
+                }));
                 recordBlockFailure(this, findBlockById(this, entry.translateBlockId), err);
             });
         }
@@ -1226,7 +1627,11 @@
 
         const generation = this._ybGeneration || 0;
         const settingsSnapshot = { ...(this.settings || {}) };
+        settingsSnapshot.translationVideoTitle = typeof document !== 'undefined'
+            ? String(document.title || '').replace(/\s+-\s+YouTube\s*$/i, '').trim()
+            : '';
         const sourceLanguage = normalizeLanguageCode(this.currentCaptionMeta?.lang) || settingsSnapshot.targetLanguage;
+        const orderedContext = orderedContextBeforeBlock(this, block.index ?? 0, 5);
         const taskRequest = {
             taskId: [
                 generation,
@@ -1241,39 +1646,41 @@
 
         const promise = (async () => {
             block.cues.forEach(cue => {
-                if (cue.translation == null) cue.translation = '__pending__';
+                if (!cueTranslationResolved(cue) && cue.translation == null) cue.translation = '__pending__';
                 if (cue.translation === '__pending__') {
+                    cue.translationMode = '';
                     emitManagerEvent('yb-caption-translation', {
                         generation,
                         index: this.captions.indexOf(cue),
                         id: cue.id,
                         translation: '',
+                        translationMode: '',
                         status: 'pending',
                         error: ''
                     });
                 }
             });
 
-            const segments = block.cues.map((cue, idx) => {
-                const globalIndex = this.captions.indexOf(cue);
-                return {
-                    id: cue.id,
-                    numericId: idx + 1,
-                    text: cue.text,
-                    prevText: this.captions[globalIndex - 1]?.text || '',
-                    nextText: this.captions[globalIndex + 1]?.text || '',
-                    displayBreakReason: cue.displayBreakReason || ''
-                };
-            });
+            const semanticPlan = block.semanticPlan || buildSemanticTranslationPlan(block.cues, sourceLanguage);
+            const firstCueIndex = this.captions.indexOf(block.cues[0]);
+            const lastCueIndex = this.captions.indexOf(block.cues[block.cues.length - 1]);
+            const segments = semanticPlan.segments.map((segment, idx, all) => ({
+                id: segment.id,
+                numericId: idx + 1,
+                text: segment.text,
+                prevText: all[idx - 1]?.text || this.captions[firstCueIndex - 1]?.text || '',
+                nextText: all[idx + 1]?.text || this.captions[lastCueIndex + 1]?.text || '',
+                displayBreakReason: 'semantic-unit'
+            }));
 
-            let byCueId;
+            let bySemanticId;
             if (typeof TranslatorService.translateStructuredBlock === 'function') {
-                byCueId = await TranslatorService.translateStructuredBlock(
+                bySemanticId = await TranslatorService.translateStructuredBlock(
                     segments,
                     sourceLanguage,
                     settingsSnapshot.nativeLanguage,
                     settingsSnapshot,
-                    this.contextBuffer || [],
+                    orderedContext,
                     taskRequest
                 );
             } else {
@@ -1289,57 +1696,73 @@
                     sourceLanguage,
                     settingsSnapshot.nativeLanguage,
                     settingsSnapshot,
-                    this.contextBuffer || [],
+                    orderedContext,
                     taskRequest
                 );
                 if (!isCurrent()) return {};
-                byCueId = {};
+                bySemanticId = {};
                 segments.forEach(s => {
-                    if (numbered?.[s.numericId]) byCueId[s.id] = numbered[s.numericId];
+                    if (numbered?.[s.numericId]) bySemanticId[s.id] = numbered[s.numericId];
                 });
             }
 
             if (!isCurrent()) return {};
-            const missingCueIds = segments
+            const missingSemanticIds = segments
                 .map(segment => segment.id)
-                .filter(id => !normalizeTranslationForDisplay(byCueId?.[id] || ''));
-            if (missingCueIds.length) {
-                const error = new Error('Block translation returned incomplete lines.');
+                .filter(id => !normalizeTranslationForDisplay(bySemanticId?.[id] || ''));
+            if (missingSemanticIds.length) {
+                const error = new Error('Block translation returned incomplete semantic units.');
                 error.code = 'INCOMPLETE_BLOCK_RESPONSE';
                 error.retryable = true;
-                error.details = { missingCueIds };
+                error.details = { missingSemanticIds };
                 throw error;
             }
 
+            const semanticTranslations = Object.fromEntries(segments.map(segment => [
+                segment.id,
+                normalizeTranslationForDisplay(bySemanticId?.[segment.id] || '')
+            ]));
+            const distribution = distributeSemanticTranslations(
+                block.cues,
+                semanticPlan,
+                semanticTranslations,
+                settingsSnapshot.nativeLanguage
+            );
+            block.semanticTranslations = semanticTranslations;
+            block.semanticDisplayCueIds = distribution.displayCueIdsBySegment;
+
             for (const cue of block.cues) {
-                const translation = normalizeTranslationForDisplay(byCueId?.[cue.id] || '');
+                const translation = distribution.byCueId[String(cue.id)] || '';
                 if (!isCurrent()) return {};
-                cue.translation = translation || null;
-                cue.translationError = translation ? '' : 'Translation unavailable';
+                cue.translation = translation;
+                cue.translationMode = translation ? 'text' : 'hold';
+                cue.translationError = '';
 
                 const panelIndex = this.captions.indexOf(cue);
                 emitManagerEvent('yb-caption-translation', {
                     generation,
                     index: panelIndex,
                     id: cue.id,
-                    translation: cue.translation || '',
-                    status: cue.translation ? 'ready' : 'error',
-                    error: cue.translationError || ''
+                    translation: cue.translation,
+                    translationMode: cue.translationMode,
+                    status: 'ready',
+                    error: ''
                 });
+            }
 
-                if (cue.translation) {
-                    this.contextBuffer = this.contextBuffer || [];
-                    this.contextBuffer.push({ original: cue.text.slice(0, 120), translated: cue.translation.slice(0, 120) });
-                    while (this.contextBuffer.length > 8) this.contextBuffer.shift();
-                    if (this.settings?.enableLogging && this.logBuffer) {
-                        this.logBuffer.set(cue.text, { timeMs: cue.startMs, translated: cue.translation });
+            block.translated = segments
+                .map(segment => semanticTranslations[segment.id])
+                .filter(Boolean)
+                .join(isNoSpaceLanguage(settingsSnapshot.nativeLanguage) ? '' : ' ');
+            if (this.settings?.enableLogging && this.logBuffer) {
+                for (const segment of semanticPlan.segments) {
+                    const translated = semanticTranslations[segment.id];
+                    if (translated) {
+                        this.logBuffer.set(segment.text, { time: segment.startMs, translated });
                     }
                 }
             }
-
-            block.translated = block.cues.every(cue => cue.translation)
-                ? block.cues.map(cue => cue.translation).join(' ')
-                : '';
+            this.contextBuffer = orderedContextBeforeBlock(this, Number.MAX_SAFE_INTEGER, 8);
 
             if (isPlaybackPriorityBlock(this, block)) {
                 emitSubtitleStatus(this, 'ready', { message: 'Bilingual subtitles are ready.' });
@@ -1376,6 +1799,14 @@
             buildTimedDisplayCues,
             alignNativeTranslations,
             buildTranslationBlocks,
+            buildSemanticTranslationPlan,
+            splitNaturalTranslation,
+            distributeSemanticTranslations,
+            normalizeTranslationForDisplay,
+            cueTranslationResolved,
+            effectiveTranslationForCue,
+            endsDangling,
+            orderedContextBeforeBlock,
             trackScore,
             trackKey
         };

@@ -86,8 +86,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 settings: testSettings
             });
             if (response?.success) {
+                // A connection test uses the values currently in the form. Persist
+                // those exact values on success so the player does not continue
+                // using an older provider, key, endpoint, or model configuration.
+                settings = await StorageHelper.saveSettings(testSettings);
                 testResult.className = 'test-result success';
-                testResult.textContent = `✓ Connection successful! Translation: "${response.result}"`;
+                testResult.textContent = `✓ Connection successful and settings saved! Translation: "${response.result}"`;
             } else {
                 testResult.className = 'test-result error';
                 testResult.textContent = `✗ Connection failed: ${response?.error || 'Unknown error'}`;
