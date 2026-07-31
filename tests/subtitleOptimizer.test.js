@@ -18,7 +18,7 @@ function createPanelHarness() {
     vm.createContext(context);
     vm.runInContext(`${panelSource}\n;globalThis.__panel = SubtitlePanel;`, context, { filename: 'panel.js' });
     const panel = context.__panel;
-    panel.renderVirtualWindow = () => {};
+    panel.renderCaptionList = () => {};
     return panel;
 }
 

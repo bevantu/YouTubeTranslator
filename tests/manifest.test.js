@@ -42,9 +42,14 @@ test('subtitle optimizer loads after the manager and before the entry point', ()
   assert.ok(managerIndex >= 0 && optimizerIndex > managerIndex && entryIndex > optimizerIndex);
 });
 
-test('responsive subtitle and panel anchors are explicit in both text directions', () => {
+test('subtitles stay centered while the side panel is docked and long lines wrap', () => {
   const css = readFileSync(join(root, 'content/content.css'), 'utf8');
+  const panel = readFileSync(join(root, 'content/panel.js'), 'utf8');
   assert.match(css, /\.yb-subtitle-container\s*\{[\s\S]*?left:\s*50%;[\s\S]*?right:\s*auto;/);
-  assert.match(css, /\.yb-panel\s*\{\s*right:\s*0;\s*left:\s*auto;/);
-  assert.match(css, /\[dir="rtl"\]\s+\.yb-panel\s*\{\s*right:\s*auto;\s*left:\s*0;/);
+  assert.match(css, /\.yb-panel\s*\{[\s\S]*?position:\s*relative;[\s\S]*?width:\s*100%;/);
+  assert.doesNotMatch(css, /\.yb-panel\s*\{[^}]*position:\s*fixed;/);
+  assert.match(css, /\.yb-panel-subtitle-entry[\s\S]*?height:\s*auto;/);
+  assert.match(css, /\.yb-panel-subtitle-entry \.yb-panel-sub-original,[\s\S]*?white-space:\s*normal;/);
+  assert.match(panel, /querySelector\('#secondary-inner'\)/);
+  assert.match(panel, /secondaryInner\.insertBefore\(this\.panel,\s*secondaryInner\.firstElementChild\)/);
 });

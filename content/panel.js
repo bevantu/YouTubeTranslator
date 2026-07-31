@@ -1,5 +1,5 @@
 /**
- * Event-driven, virtualized subtitle panel.
+ * Event-driven subtitle panel docked into YouTube's watch layout.
  */
 const SubtitlePanel = {
     panel: null,
@@ -56,12 +56,12 @@ Object.assign(SubtitlePanel, {
     generation: null,
     activeIndex: -1,
     displayMode: 'bilingual',
-    rowHeight: 94,
     followActive: true,
-    renderQueued: false,
     _initialized: false,
     _eventsBound: false,
     _playerControlsTimer: null,
+    _playerResizeObserver: null,
+    _observedPlayer: null,
     _programmaticScroll: false,
 
     init() {
@@ -117,11 +117,12 @@ Object.assign(SubtitlePanel, {
             </div>
           </div>
         `;
-        document.body.appendChild(this.panel);
         this.subtitleList = this.panel.querySelector('.yb-panel-subtitle-list');
         this.subtitleViewport = this.panel.querySelector('.yb-subtitles-tab');
         this.emptyState = this.panel.querySelector('.yb-panel-empty');
         this.followButton = this.panel.querySelector('.yb-panel-follow');
+        this.ensurePanelDock();
+        this.observePlayerSize();
 
         this.panel.querySelector('.yb-panel-close').addEventListener('click', () => this.hide());
         this.panel.querySelector('.yb-panel-download-log').addEventListener('click', () => SubtitleManager.downloadLog());
@@ -165,7 +166,6 @@ Object.assign(SubtitlePanel, {
                 this.followActive = false;
                 this.followButton.hidden = false;
             }
-            this.queueVirtualRender();
         }, { passive: true });
         this.followButton.addEventListener('click', () => {
             this.followActive = true;
@@ -173,7 +173,7 @@ Object.assign(SubtitlePanel, {
             this.scrollActiveIntoView();
         });
 
-        this.renderVirtualWindow(true);
+        this.renderCaptionList(true);
     },
 
     bindDocumentEvents() {
@@ -235,7 +235,7 @@ Object.assign(SubtitlePanel, {
         if (this.followButton) this.followButton.hidden = true;
         if (this.subtitleViewport) this.subtitleViewport.scrollTop = 0;
         this.setEmptyMessage(this.captions.length ? '' : 'Waiting for captions...');
-        this.renderVirtualWindow(true);
+        this.renderCaptionList(true);
         this.setStatus({
             state: this.captions.length ? 'ready' : 'waiting',
             message: this.captions.length ? `${this.captions.length} captions` : 'Waiting'
@@ -249,33 +249,20 @@ Object.assign(SubtitlePanel, {
         if (this.subtitleList) this.subtitleList.hidden = Boolean(message);
     },
 
-    queueVirtualRender() {
-        if (this.renderQueued) return;
-        this.renderQueued = true;
-        requestAnimationFrame(() => {
-            this.renderQueued = false;
-            this.renderVirtualWindow();
-        });
-    },
-
-    renderVirtualWindow(force = false) {
-        if (!this.subtitleList || !this.subtitleViewport) return;
-        if (!this.captions.length) {
+    renderCaptionList(force = false) {
+        if (!this.subtitleList) return;
+        if (!this.isVisible || !this.captions.length) {
             this.subtitleList.replaceChildren();
-            this.subtitleList.style.height = '0px';
+            delete this.subtitleList.dataset.renderSignature;
             return;
         }
 
-        const viewportHeight = this.subtitleViewport.clientHeight || 600;
-        const start = Math.max(0, Math.floor(this.subtitleViewport.scrollTop / this.rowHeight) - 6);
-        const end = Math.min(this.captions.length, Math.ceil((this.subtitleViewport.scrollTop + viewportHeight) / this.rowHeight) + 6);
-        const signature = `${start}:${end}:${this.activeIndex}:${this.displayMode}`;
-        if (!force && this.subtitleList.dataset.window === signature) return;
-        this.subtitleList.dataset.window = signature;
-        this.subtitleList.style.height = `${this.captions.length * this.rowHeight}px`;
+        const signature = `${this.generation ?? ''}:${this.captions.length}`;
+        if (!force && this.subtitleList.dataset.renderSignature === signature) return;
+        this.subtitleList.dataset.renderSignature = signature;
 
         const fragment = document.createDocumentFragment();
-        for (let position = start; position < end; position++) {
+        for (let position = 0; position < this.captions.length; position++) {
             fragment.appendChild(this.createCaptionEntry(this.captions[position], position));
         }
         this.subtitleList.replaceChildren(fragment);
@@ -290,7 +277,6 @@ Object.assign(SubtitlePanel, {
         entry.setAttribute('role', 'listitem');
         entry.setAttribute('aria-label', `${this.formatTime(caption.startMs / 1000)}. ${caption.text}`);
         entry.classList.toggle('active', caption.index === this.activeIndex);
-        entry.style.transform = `translateY(${position * this.rowHeight}px)`;
 
         const time = document.createElement('span');
         time.className = 'yb-panel-sub-time';
@@ -320,20 +306,39 @@ Object.assign(SubtitlePanel, {
         caption.translationMode = translationMode || '';
         caption.status = status || (translated ? 'ready' : '');
         caption.error = error || '';
-        this.renderVirtualWindow(true);
+        const entry = this.subtitleList?.querySelector(`[data-position="${position}"]`);
+        const translatedElement = entry?.querySelector('.yb-panel-sub-translated');
+        if (!translatedElement) return;
+        translatedElement.dataset.status = caption.status;
+        translatedElement.dataset.mode = caption.translationMode;
+        translatedElement.textContent = caption.status === 'pending'
+            ? 'Translating...'
+            : (caption.status === 'error' ? 'Translation unavailable' : caption.translation);
     },
 
     setActive(index) {
         if (!Number.isFinite(index) || this.activeIndex === index) return;
+        const previousPosition = this.indexToPosition.get(this.activeIndex);
         this.activeIndex = index;
-        this.renderVirtualWindow(true);
+        if (previousPosition != null) {
+            this.subtitleList?.querySelector(`[data-position="${previousPosition}"]`)?.classList.remove('active');
+        }
+        const position = this.indexToPosition.get(index);
+        if (position != null) {
+            this.subtitleList?.querySelector(`[data-position="${position}"]`)?.classList.add('active');
+        }
         if (this.followActive && this.isVisible) this.scrollActiveIntoView();
     },
 
     scrollActiveIntoView() {
         const position = this.indexToPosition.get(this.activeIndex);
         if (position == null || !this.subtitleViewport) return;
-        const target = Math.max(0, position * this.rowHeight - (this.subtitleViewport.clientHeight - this.rowHeight) / 2);
+        const entry = this.subtitleList?.querySelector(`[data-position="${position}"]`);
+        if (!entry) return;
+        const target = Math.max(
+            0,
+            entry.offsetTop - (this.subtitleViewport.clientHeight - entry.offsetHeight) / 2
+        );
         this._programmaticScroll = true;
         const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
         this.subtitleViewport.scrollTo({ top: target, behavior: reducedMotion ? 'auto' : 'smooth' });
@@ -353,9 +358,57 @@ Object.assign(SubtitlePanel, {
         if (name === 'vocabulary') this.loadVocabulary();
     },
 
+    ensurePanelDock() {
+        if (!this.panel || document.fullscreenElement) return;
+        const watch = document.querySelector('ytd-watch-flexy');
+        const secondaryInner = watch?.querySelector('#secondary-inner');
+        const player = watch?.querySelector('#player');
+
+        if (secondaryInner) {
+            if (this.panel.parentElement !== secondaryInner || secondaryInner.firstElementChild !== this.panel) {
+                secondaryInner.insertBefore(this.panel, secondaryInner.firstElementChild);
+            }
+            this.panel.dataset.dock = 'secondary';
+        } else if (player?.parentElement) {
+            if (this.panel.previousElementSibling !== player) player.insertAdjacentElement('afterend', this.panel);
+            this.panel.dataset.dock = 'below-player';
+        } else if (document.body && this.panel.parentElement !== document.body) {
+            document.body.appendChild(this.panel);
+            this.panel.dataset.dock = 'fallback';
+        }
+
+        this.syncPanelHeight();
+    },
+
+    observePlayerSize() {
+        const player = document.querySelector('ytd-watch-flexy #movie_player');
+        if (player === this._observedPlayer && player?.isConnected) {
+            this.syncPanelHeight();
+            return;
+        }
+
+        this._playerResizeObserver?.disconnect();
+        this._playerResizeObserver = null;
+        this._observedPlayer = player || null;
+        if (player && typeof ResizeObserver !== 'undefined') {
+            this._playerResizeObserver = new ResizeObserver(() => this.syncPanelHeight());
+            this._playerResizeObserver.observe(player);
+        }
+        this.syncPanelHeight();
+    },
+
+    syncPanelHeight() {
+        if (!this.panel || document.fullscreenElement) return;
+        const player = this._observedPlayer || document.querySelector('ytd-watch-flexy #movie_player');
+        const height = Math.round(player?.getBoundingClientRect().height || 0);
+        if (height >= 240) this.panel.style.setProperty('--yb-panel-height', `${height}px`);
+    },
+
     addPlayerControls() {
         if (this._playerControlsTimer) return;
         const mount = () => {
+            this.ensurePanelDock();
+            this.observePlayerSize();
             const controls = document.querySelector('.ytp-right-controls');
             if (!controls) return;
 
@@ -389,6 +442,9 @@ Object.assign(SubtitlePanel, {
             clearInterval(this._playerControlsTimer);
             this._playerControlsTimer = null;
         }
+        this._playerResizeObserver?.disconnect();
+        this._playerResizeObserver = null;
+        this._observedPlayer = null;
         document.querySelectorAll('.yb-display-mode-btn, .yb-toggle-panel-btn').forEach(button => button.remove());
         this.hide(false);
         this._initialized = false;
@@ -429,7 +485,6 @@ Object.assign(SubtitlePanel, {
             modeButton.setAttribute('aria-label', `${labels[this.displayMode]}. Click to change mode.`);
             modeButton.querySelector('.yb-mode-glyph').textContent = glyphs[this.displayMode];
         }
-        this.renderVirtualWindow(true);
     },
 
     toggle(persist = true) {
@@ -437,7 +492,9 @@ Object.assign(SubtitlePanel, {
     },
 
     show(persist = true) {
-        if (!this.panel) this.init();
+        if (!this.panel?.isConnected) this.init();
+        this.ensurePanelDock();
+        this.observePlayerSize();
         this.isVisible = true;
         this.panel.classList.add('visible');
         this.panel.setAttribute('aria-hidden', 'false');
@@ -448,7 +505,7 @@ Object.assign(SubtitlePanel, {
                 this.setStatus({ state: 'error', message: `Could not save panel preference: ${error.message}` });
             });
         }
-        this.renderVirtualWindow(true);
+        this.renderCaptionList();
         if (this.followActive) this.scrollActiveIntoView();
     },
 
@@ -471,7 +528,7 @@ Object.assign(SubtitlePanel, {
         this.generation = null;
         this.activeIndex = -1;
         this.setEmptyMessage(message);
-        this.renderVirtualWindow(true);
+        this.renderCaptionList(true);
         this.setStatus({ state: 'waiting', message });
     },
 
@@ -489,8 +546,9 @@ Object.assign(SubtitlePanel, {
             fullscreenRoot.appendChild(this.panel);
             this.panel.classList.add('yb-panel-fullscreen');
         } else {
-            document.body.appendChild(this.panel);
             this.panel.classList.remove('yb-panel-fullscreen');
+            this.ensurePanelDock();
+            this.observePlayerSize();
         }
     }
 });
